@@ -92,7 +92,7 @@ def get_model(model_name, num_classes, device):
         return PointNet2(num_classes=num_classes, normal_channel=True).to(device)    
     elif model_name == "DGCNN":
         # k=20 is standard for DGCNN segmentation
-        return DGCNN(num_classes=num_classes, k=20).to(device)
+        return DGCNN(num_classes=num_classes, k=40).to(device)
     else:
         raise ValueError(f"❌ Unknown Model: {model_name}")
 
