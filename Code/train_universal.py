@@ -103,9 +103,12 @@ def main():
     # --- A. ACTIVATE SEEDING (CRITICAL FOR WEIGHTS) ---
     set_seed(args.seed)
     
-    # Global generator for shuffling and splitting
-    g = torch.Generator()
-    g.manual_seed(args.seed)
+    # Decouple generators to stop validation splits from shifting the training random baseline
+    train_g = torch.Generator()
+    train_g.manual_seed(args.seed)
+    
+    val_g = torch.Generator()
+    val_g.manual_seed(args.seed)
     
     # --- B. FOLDER SETUP ---
     experiment_name = f"{args.model}_{args.dataset}_lr{args.lr}_bs{args.batch_size}_ep{args.epochs}_seed{args.seed}"
@@ -136,10 +139,20 @@ def main():
             val_size = int(0.2 * total_size)
             train_size = total_size - val_size
             
-            # Using our global generator 'g' ensures the split is the same every time
-            train_ds, val_ds = random_split(full_train_ds, [train_size, val_size], generator=g)
+            # Create a dedicated validation dataset clone and explicitly turn off augmentations
+            full_val_ds = ThesisDataset(args.root, args.dataset, split='train')
+            full_val_ds.split = 'val'
+
+            # Symmetrically determine random indices using our separate validation generator
+            indices = torch.randperm(total_size, generator=val_g).tolist()
+            train_idx = indices[:train_size]
+            val_idx = indices[train_size:]
+
+            # Build subsets mapping points correctly to their respective active/inactive pipelines
+            train_ds = torch.utils.data.Subset(full_train_ds, train_idx)
+            val_ds = torch.utils.data.Subset(full_val_ds, val_idx)
             
-            val_file_list = [str(full_train_ds.file_list[idx]['xyz']) for idx in val_ds.indices]
+            val_file_list = [str(full_train_ds.file_list[idx]['xyz']) for idx in val_idx]
 
         # Save Record
         val_record_path = os.path.join(save_dir, "validation_split.txt")
@@ -151,12 +164,12 @@ def main():
         train_loader = DataLoader(
             train_ds, batch_size=args.batch_size, shuffle=True, 
             drop_last=True, num_workers=args.workers, pin_memory=True,
-            worker_init_fn=seed_worker, generator=g # <--- SEED FIX
+            worker_init_fn=seed_worker, generator=train_g
         )
         val_loader = DataLoader(
             val_ds, batch_size=args.batch_size, shuffle=False, 
             num_workers=args.workers, pin_memory=True,
-            worker_init_fn=seed_worker, generator=g # <--- SEED FIX
+            generator=val_g 
         )
         
         logger.log(f"Train samples: {len(train_ds)} | Val samples: {len(val_ds)}")
@@ -188,6 +201,10 @@ def main():
     
     # --- E. EPOCH LOOP ---
     for epoch in range(args.epochs):
+
+        # Force shuffling sequence and dataset transformations to reset identically every epoch
+        train_loader.generator.manual_seed(args.seed + epoch)
+
         # A. TRAIN
         model.train()
         train_loss, train_correct, train_total = 0.0, 0, 0

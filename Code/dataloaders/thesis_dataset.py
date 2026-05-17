@@ -16,6 +16,9 @@ class ThesisDataset(Dataset):
             
         Returns tensors in (Channels, Points) format: [3, N] and [6, N].
         """
+        # Save split variable to identify train vs val/test sets
+        self.split = split
+
         # 1. Build Base Path (Linux safe)
         self.data_path = os.path.join(root_dir, dataset_name, split)
         
@@ -77,15 +80,35 @@ class ThesisDataset(Dataset):
         points = data[:, 0:3]   # XYZ
         normals = data[:, 3:6]  # Normals
         
-        # 4. Prepare Input Tensor (Concatenate XYZ + Normals)
+        # 4. Apply Stochastic Augmentations (Train Split Only)
+        if self.split == 'train':  # <--- INJECTED BLOCK STARTS HERE
+            # A. Full 3D Rotation (SO(3))
+            angles = np.random.uniform(0, 2 * np.pi, size=3)
+            Rx = np.array([[1, 0, 0], [0, np.cos(angles[0]), -np.sin(angles[0])], [0, np.sin(angles[0]), np.cos(angles[0])]])
+            Ry = np.array([[np.cos(angles[1]), 0, np.sin(angles[1])], [0, 1, 0], [-np.sin(angles[1]), 0, np.cos(angles[1])]])
+            Rz = np.array([[np.cos(angles[2]), -np.sin(angles[2]), 0], [np.sin(angles[2]), np.cos(angles[2]), 0], [0, 0, 1]])
+            R = Rz @ Ry @ Rx
+            
+            points = points @ R.T
+            normals = normals @ R.T
+
+            # B. Subtle Scale Jitter (0.95 to 1.05)
+            scale = np.random.uniform(0.85, 0.95)
+            points = points * scale
+
+            # C. Random Translation Shift (+/- 0.01)
+            shift = np.random.uniform(-0.04, 0.04, size=3)
+            points = points + shift # <--- INJECTED BLOCK ENDS HERE
+
+        # 5. Prepare Input Tensor (Concatenate XYZ + Normals)
         features = np.concatenate((points, normals), axis=1) # (N, 6)
         
-        # 5. Transpose for PyTorch (Channels First)
+        # 6. Transpose for PyTorch (Channels First)
         # Conv1d expects (Batch, Channels, Length) -> (6, N)
         features = features.transpose(1, 0) 
         points   = points.transpose(1, 0)
         
-        # 6. To Tensor
+        # 7. To Tensor
         feat_tensor = torch.from_numpy(features)
         pos_tensor  = torch.from_numpy(points)
         lbl_tensor  = torch.from_numpy(labels)
