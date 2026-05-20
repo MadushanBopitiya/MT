@@ -21,7 +21,7 @@ from models.pointnet2 import PointNet2
 from models.dgcnn import DGCNN
 from models.kpconv import KPConv          
 # from models.point_transformer import PointTransformer
-# from models.pvt import PVT
+from models.pvt import PVT
 
 # --- 2. SEEDING & REPRODUCIBILITY UTILITIES (RE-INSERTED) ---
 def set_seed(seed):
@@ -95,6 +95,9 @@ def get_model(model_name, num_classes, device):
         return DGCNN(num_classes=num_classes, k=40).to(device)
     elif model_name == "KPConv":
         return KPConv(num_classes=num_classes).to(device)
+    elif model_name == "PVT":
+        # Pass 4096 (or 2048) down to ensure the Relative Attention constructs correctly
+        return PVT(num_classes=num_classes, num_points=4096).to(device)
     else:
         raise ValueError(f"❌ Unknown Model: {model_name}")
 
