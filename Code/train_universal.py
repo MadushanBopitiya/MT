@@ -19,7 +19,7 @@ matplotlib.use('Agg')
 from dataloaders.thesis_dataset import ThesisDataset
 from models.pointnet2 import PointNet2
 from models.dgcnn import DGCNN
-# from models.kpconv import KPConv          
+from models.kpconv import KPConv          
 # from models.point_transformer import PointTransformer
 # from models.pvt import PVT
 
@@ -91,8 +91,10 @@ def get_model(model_name, num_classes, device):
     if model_name == "PointNet2":
         return PointNet2(num_classes=num_classes, normal_channel=True).to(device)    
     elif model_name == "DGCNN":
-        # k=20 is standard for DGCNN segmentation
+        # k=40 is standard for 2048 points DGCNN segmentation
         return DGCNN(num_classes=num_classes, k=40).to(device)
+    elif model_name == "KPConv":
+        return KPConv(num_classes=num_classes).to(device)
     else:
         raise ValueError(f"❌ Unknown Model: {model_name}")
 
