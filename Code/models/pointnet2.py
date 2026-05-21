@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# --- PART 1: UTILITY FUNCTIONS (Unchanged) ---
+# --- PART 1: UTILITY FUNCTIONS ---
 def square_distance(src, dst):
     B, N, _ = src.shape
     _, M, _ = dst.shape
@@ -66,7 +66,24 @@ def sample_and_group(npoint, radius, nsample, xyz, points):
         new_points = grouped_xyz_norm
     return new_xyz, new_points
 
-# --- PART 2: NETWORK LAYERS (Unchanged) ---
+# --- ADDED: Required for Global Set Abstraction (SA3) ---
+def sample_and_group_all(xyz, points):
+    """
+    Groups all points into a single global region. 
+    Prevents the Farthest Point Sampling crash when npoint=None.
+    """
+    device = xyz.device
+    B, N, C = xyz.shape
+    new_xyz = torch.zeros(B, 1, C).to(device)
+    grouped_xyz = xyz.view(B, 1, N, C)
+    if points is not None:
+        new_points = torch.cat([grouped_xyz, points.view(B, 1, N, -1)], dim=-1)
+    else:
+        new_points = grouped_xyz
+    return new_xyz, new_points
+
+
+# --- PART 2: NETWORK LAYERS ---
 class PointNetSetAbstraction(nn.Module):
     def __init__(self, npoint, radius, nsample, in_channel, mlp, group_all):
         super(PointNetSetAbstraction, self).__init__()
@@ -85,8 +102,13 @@ class PointNetSetAbstraction(nn.Module):
     def forward(self, xyz, points):
         xyz = xyz.permute(0, 2, 1)
         if points is not None: points = points.permute(0, 2, 1)
-        if self.group_all: new_xyz, new_points = sample_and_group(None, None, None, xyz, points)
-        else: new_xyz, new_points = sample_and_group(self.npoint, self.radius, self.nsample, xyz, points)
+        
+        # --- FIXED: Proper routing for Global Aggregation ---
+        if self.group_all: 
+            new_xyz, new_points = sample_and_group_all(xyz, points)
+        else: 
+            new_xyz, new_points = sample_and_group(self.npoint, self.radius, self.nsample, xyz, points)
+            
         new_points = new_points.permute(0, 3, 2, 1)
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
@@ -131,35 +153,40 @@ class PointNetFeaturePropagation(nn.Module):
             new_points = F.relu(bn(conv(new_points)))
         return new_points
 
-# --- PART 3: MAIN MODEL CLASS (CORRECTED) ---
+
+# --- PART 3: MAIN MODEL CLASS (CORRECTED FOR PART SEGMENTATION) ---
 class PointNet2(nn.Module):
-    def __init__(self, num_classes=25, normal_channel=True):
+    def __init__(self, num_classes=50, normal_channel=True):
         super(PointNet2, self).__init__()
         
-        # --- THE CRITICAL FIX IS HERE ---
-        # We determine input channels (usually 6 for XYZ+Normals)
+        # Determine input channels (usually 6 for XYZ+Normals)
         input_channels = 6 if normal_channel else 3
         
-        # We MUST add 3 because the first layer appends relative XYZ coordinates
+        # We must add 3 because the first layer appends relative XYZ coordinates
         sa1_in_channels = input_channels + 3 
         
-        # --- ENCODER ---
-        # Note: We pass 'sa1_in_channels' (9), not 'input_channels' (6)
-        self.sa1 = PointNetSetAbstraction(npoint=1024, radius=0.1, nsample=32, in_channel=sa1_in_channels, mlp=[32, 32, 64], group_all=False)
-        self.sa2 = PointNetSetAbstraction(npoint=256, radius=0.2, nsample=32, in_channel=64 + 3, mlp=[64, 64, 128], group_all=False)
-        self.sa3 = PointNetSetAbstraction(npoint=64, radius=0.4, nsample=32, in_channel=128 + 3, mlp=[128, 128, 256], group_all=False)
-        self.sa4 = PointNetSetAbstraction(npoint=16, radius=0.8, nsample=32, in_channel=256 + 3, mlp=[256, 256, 512], group_all=False)
+        # --- ENCODER (3 Set Abstraction Layers) ---
+        # SA1: 512 points, 0.2 radius
+        self.sa1 = PointNetSetAbstraction(npoint=512, radius=0.2, nsample=32, in_channel=sa1_in_channels, mlp=[64, 64, 128], group_all=False)
         
-        # --- DECODER ---
-        self.fp4 = PointNetFeaturePropagation(in_channel=768, mlp=[256, 256])
-        self.fp3 = PointNetFeaturePropagation(in_channel=384, mlp=[256, 256])
-        self.fp2 = PointNetFeaturePropagation(in_channel=320, mlp=[256, 128])
+        # SA2: 128 points, 0.4 radius
+        self.sa2 = PointNetSetAbstraction(npoint=128, radius=0.4, nsample=32, in_channel=128 + 3, mlp=[128, 128, 256], group_all=False)
         
-        # FIX 2: Correct input channels for FP1
-        # FP1 concatenates Original Features (6) + FP2 Output (128)
+        # SA3: Global Aggregation
+        self.sa3 = PointNetSetAbstraction(npoint=None, radius=None, nsample=None, in_channel=256 + 3, mlp=[256, 512, 1024], group_all=True)
+        
+        # --- DECODER (3 Feature Propagation Layers) ---
+        # FP3: Combines SA3 (1024) and SA2 (256) -> 1280
+        self.fp3 = PointNetFeaturePropagation(in_channel=1024 + 256, mlp=[256, 256])
+        
+        # FP2: Combines FP3 (256) and SA1 (128) -> 384
+        self.fp2 = PointNetFeaturePropagation(in_channel=256 + 128, mlp=[256, 128])
+        
+        # FP1: Combines FP2 (128) and Original Inputs (input_channels)
         self.fp1 = PointNetFeaturePropagation(in_channel=128 + input_channels, mlp=[128, 128, 128])
 
         # --- HEAD ---
+        # The paper applies dropout with a 0.5 keep probability before the final classifier.
         self.conv1 = nn.Conv1d(128, 128, 1)
         self.bn1 = nn.BatchNorm1d(128)
         self.drop1 = nn.Dropout(0.5)
@@ -173,16 +200,14 @@ class PointNet2(nn.Module):
         l1_xyz, l1_points = self.sa1(l0_xyz, l0_points)
         l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)
         l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)
-        l4_xyz, l4_points = self.sa4(l3_xyz, l3_points)
 
         # Decoder
-        l3_points = self.fp4(l3_xyz, l4_xyz, l3_points, l4_points)
         l2_points = self.fp3(l2_xyz, l3_xyz, l2_points, l3_points)
         l1_points = self.fp2(l1_xyz, l2_xyz, l1_points, l2_points)
-        
-        # FP1 Upsample
         l0_points = self.fp1(l0_xyz, l1_xyz, l0_points, l1_points)
 
+        # Final Classifier Head
         x = self.drop1(F.relu(self.bn1(self.conv1(l0_points))))
         x = self.conv2(x)
+        
         return F.log_softmax(x, dim=1), l0_points
