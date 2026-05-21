@@ -156,7 +156,7 @@ class PointNetFeaturePropagation(nn.Module):
 
 # --- PART 3: MAIN MODEL CLASS (CORRECTED FOR PART SEGMENTATION) ---
 class PointNet2(nn.Module):
-    def __init__(self, num_classes=50, normal_channel=True):
+    def __init__(self, num_classes, normal_channel=True):
         super(PointNet2, self).__init__()
         
         # Determine input channels (usually 6 for XYZ+Normals)
