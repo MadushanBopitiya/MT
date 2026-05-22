@@ -97,7 +97,7 @@ class ThesisDataset(Dataset):
             points = points * scale
 
             # C. Random Translation Shift (+/- 0.01)
-            shift = np.random.uniform(-0.04, 0.04, size=3)
+            shift = np.random.uniform(-0.02, 0.02, size=3)
             points = points + shift # <--- INJECTED BLOCK ENDS HERE
 
         # 5. Prepare Input Tensor (Concatenate XYZ + Normals)
