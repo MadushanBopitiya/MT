@@ -3,6 +3,7 @@ import sys
 import argparse
 import torch
 import torch.optim as optim
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader, random_split
@@ -185,7 +186,21 @@ def main():
     # --- D. BUILD MODEL ---
     # Because set_seed was called earlier, these weights are now deterministic
     model = get_model(args.model, args.classes, device)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    
+    # 1. AdamW Optimizer with strict Weight Decay
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
+    
+    # 2. Build the Hybrid Scheduler
+    warmup_epochs = 10
+    # Ramps from 1% of args.lr up to 100% of args.lr over 10 epochs
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs)
+    
+    # Cosine decay for the remaining epochs
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=(args.epochs - warmup_epochs), eta_min=1e-6)
+    
+    # Stitch them together
+    scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs])
+
     criterion = nn.NLLLoss()
 
     # --- TRACKERS & EARLY STOPPING SETUP ---
@@ -255,6 +270,11 @@ def main():
 
         log_msg = f"Ep {epoch+1}: Train Loss {avg_train_loss:.4f} | Val Loss {avg_val_loss:.4f} | Val Acc {avg_val_acc:.2f}%"
         logger.log(log_msg)
+
+        # --- NEW: UPDATE LEARNING RATE ---
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+        logger.log(f"   -> LR adjusted to: {current_lr:.6f} for next epoch")
 
         # --- STRATEGY A: Save "Most Correct" Model (Accuracy) ---
         if avg_val_acc > best_val_acc:
