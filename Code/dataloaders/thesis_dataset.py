@@ -109,9 +109,9 @@ class ThesisDataset(Dataset):
         points   = points.transpose(1, 0)
         
         # 7. To Tensor
-        feat_tensor = torch.from_numpy(features)
-        pos_tensor  = torch.from_numpy(points)
-        lbl_tensor  = torch.from_numpy(labels)
+        feat_tensor = torch.from_numpy(features).float()
+        pos_tensor  = torch.from_numpy(points).float()
+        lbl_tensor  = torch.from_numpy(labels).long()
         
         return {
             'pos': pos_tensor,  # (3, N)
