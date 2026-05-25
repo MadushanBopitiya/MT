@@ -14,29 +14,36 @@ from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.TopLoc import TopLoc_Location
 
-# ==========================================
-# --- 1. CONFIGURATION ---
-# ==========================================
-TOTAL_POINTS = 2048  # Updated to match the \2048\ output directory
+# --- CONFIGURATION ---
+TOTAL_POINTS = 2048
 
-RAW_DATASET_DIR = r"D:\MASTER THESIS\Data\raw\Machining_Tools"
-OUTPUT_DIR = r"D:\MASTER THESIS\Data\processed\2048\Machining_Tools"
+# Our 18-to-14 Tool Class Compression Dictionary
+TOOL_LABEL_MAPPING = {
+    0: 0, 1: 1, 2: 2, 3: 3, 5: 3, 4: 4, 6: 5, 7: 6, 8: 7, 
+    10: 7, 9: 8, 11: 9, 13: 9, 12: 10, 14: 11, 17: 11, 15: 12, 16: 13
+}
 
-# Class ID to assign to faces that do not require machining (e.g., untouched stock)
-# Make sure this doesn't overlap with a real ToolType ID from the CSV
-UNMACHINED_CLASS = 0 
+# 14 Distinct Colors for the 14 Tool Classes + 1 Grey for Unmapped (-1)
+PALETTE = np.array([
+    [255, 0, 0],     # 0: Anbohrer (Red)
+    [0, 255, 0],     # 1: Kegelfraeser (Green)
+    [0, 0, 255],     # 2: Kegelsenker (Blue)
+    [255, 255, 0],   # 3: Kugelfraeser (Yellow)
+    [255, 0, 255],   # 4: Messerkopf (Magenta)
+    [0, 255, 255],   # 5: Schaftfraeser (Cyan)
+    [255, 128, 0],   # 6: Rueckwaertskegelsenker (Orange)
+    [128, 0, 128],   # 7: Spiralbohrer (Purple)
+    [128, 128, 0],   # 8: Stufenbohrer (Olive)
+    [0, 128, 128],   # 9: Torusfraeser (Teal)
+    [128, 0, 0],     # 10: Viertelkreisfraeser (Maroon)
+    [0, 128, 0],     # 11: Zentrierbohrer (Dark Green)
+    [0, 0, 128],     # 12: Wendeplattenfraeser (Navy)
+    [255, 105, 180], # 13: Zapfensenker (Hot Pink)
+    [192, 192, 192]  # Default/Unmapped (Light Grey) -> For label -1
+])
 
-# Dynamically generate a large color palette for up to 100 tool types for PLY viewing
-np.random.seed(42)
-COLOR_PALETTE = np.random.randint(0, 255, size=(100, 3))
-COLOR_PALETTE[UNMACHINED_CLASS] = [100, 100, 100] # Set unmachined faces to Gray
-
-
-# ==========================================
-# --- 2. HELPER FUNCTIONS ---
-# ==========================================
 def occ_face_to_trimesh(occ_face):
-    """Convert a PythonOCC face to a Trimesh object."""
+    """Convert PythonOCC face to Trimesh."""
     BRepMesh_IncrementalMesh(occ_face, 0.1)
     loc = TopLoc_Location()
     triangulation = BRep_Tool.Triangulation(occ_face, loc)
@@ -55,85 +62,64 @@ def occ_face_to_trimesh(occ_face):
     if len(triangles) == 0: return None
     return trimesh.Trimesh(vertices=nodes, faces=triangles)
 
-def build_face_to_tool_map(json_path, csv_path):
-    """
-    Creates a direct dictionary mapping: PythonOCC Face Index -> Target ToolType
-    """
-    # 1. Map Sequence ID -> ToolType from CSV
-    seq_to_tool = {}
+def create_face_to_label_map(json_path, csv_path):
+    """Bridges JSON Face IDs to CSV Sequence, then compresses to PyTorch Class (0-13)"""
+    seq_to_class = {}
     if os.path.exists(csv_path):
-        with open(csv_path, 'r') as f:
+        with open(csv_path, 'r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f, delimiter=';')
             for row in reader:
-                seq_id = int(row['Sequence'])
-                tool_type = int(row['ToolType'])
-                seq_to_tool[seq_id] = tool_type
-
-    # 2. Map Face Index -> Sequence ID -> ToolType from JSON
-    face_idx_to_tool = {}
+                if 'Sequence' in row and 'ToolType' in row:
+                    seq_id = int(row['Sequence'])
+                    tool_id = int(row['ToolType'])
+                    seq_to_class[seq_id] = TOOL_LABEL_MAPPING.get(tool_id, -1)
+            
+    face_to_class = {}
     if os.path.exists(json_path):
-        with open(json_path, 'r') as f:
+        with open(json_path, 'r', encoding='utf-8') as f:
             face_types = json.load(f)
-            
-        for key, value in face_types.items():
-            if key == "keys": continue # Skip the metadata key
-            
-            face_idx = int(key)
-            sequence_id = int(value[5]) # The 6th element is the Sequence ID
-            
-            # Look up the ToolType. If sequence isn't in CSV, assume it's unmachined
-            target_tool = seq_to_tool.get(sequence_id, UNMACHINED_CLASS)
-            face_idx_to_tool[face_idx] = target_tool
-            
-    return face_idx_to_tool
+            for face_id, data_array in face_types.items():
+                if face_id == "keys": continue 
+                sequence_id = data_array[5] # AreaColor / Sequence is index 5
+                face_to_class[str(face_id)] = seq_to_class.get(sequence_id, -1)
+                
+    return face_to_class
 
-
-# ==========================================
-# --- 3. MAIN PROCESSING PIPELINE ---
-# ==========================================
-def process_cam_folder(folder_path):
-    """Processes a single part folder dynamically using the sidecar JSON/CSV methodology."""
+def process_single_part(folder_path, output_dir):
+    """Processes a single CAD part folder."""
+    part_name = os.path.basename(folder_path)
     
-    # 1. Dynamically find the STEP file in the main folder
-    stp_files = glob.glob(os.path.join(folder_path, "*.stp")) + glob.glob(os.path.join(folder_path, "*.step"))
-    if not stp_files: 
-        return # Skip if no CAD file exists in this folder
-        
-    stp_path = stp_files[0]
+    # 1. Locate the trio of files
+    stp_path = os.path.join(folder_path, f"{part_name}_Dst.stp")
+    csv_path = os.path.join(folder_path, f"{part_name}_encoded.csv")
+    json_path = os.path.join(folder_path, f"{part_name}_face_types.json")
     
-    # Extract the true base name (e.g., "bearing_holder" from "bearing_holder_Dst.stp")
-    raw_stem = os.path.basename(stp_path).split('.')[0]
-    base_name = raw_stem.replace("_Dst", "") 
-    
-    # 2. Build paths to the sidecar metadata
-    json_path = os.path.join(folder_path, f"{base_name}_face_types.json")
-    csv_path = os.path.join(folder_path, f"{base_name}_encoded.csv")
+    if not os.path.exists(stp_path) or not os.path.exists(json_path):
+        return # Skip if missing core files
 
-    # 3. Build the exact Face -> Tool label map
-    face_to_tool_map = build_face_to_tool_map(json_path, csv_path)
+    # 2. Build the label mapping
+    face_to_label = create_face_to_label_map(json_path, csv_path)
 
-    # 4. Load Geometry
+    # 3. Load Geometry
     step_reader = STEPControl_Reader()
     status = step_reader.ReadFile(stp_path)
     if status != 1: return
 
     step_reader.TransferRoots()
-    try: 
-        shape = step_reader.OneShape()
-    except AssertionError: 
-        return
+    try: shape = step_reader.OneShape()
+    except AssertionError: return
 
     explorer = TopExp_Explorer(shape, TopAbs_FACE)
     all_points, all_normals, all_labels = [], [], []
     
-    # Track the sequence perfectly with PythonOCC's traversal
+    # In datasets exported to STEP, topological iteration often matches the assigned integer Face ID
     face_idx = 0 
     
     while explorer.More():
         face = explorer.Current()
         
-        # Get the target ToolType. Default to unmachined if face wasn't in the JSON
-        label = face_to_tool_map.get(face_idx, UNMACHINED_CLASS)
+        # Try to map by string index. If it wasn't machined, it defaults to -1.
+        label = face_to_label.get(str(face_idx), -1)
             
         tm = occ_face_to_trimesh(face)
         if tm is not None:
@@ -154,7 +140,7 @@ def process_cam_folder(folder_path):
     full_nrms = np.vstack(all_normals)
     full_lbls = np.concatenate(all_labels)
     
-    # Downsample
+    # 4. Downsample/Upsample to 4096
     if len(full_pts) >= TOTAL_POINTS:
         choice = np.random.choice(len(full_pts), TOTAL_POINTS, replace=False)
     else:
@@ -164,44 +150,44 @@ def process_cam_folder(folder_path):
     final_nrms = full_nrms[choice]
     final_lbls = full_lbls[choice]
     
-    # Normalize to Unit Sphere (Crucial for PointNet++ / KPConv pipelines)
+    # 5. Normalize (Unit sphere)
     final_pts -= np.mean(final_pts, axis=0)
     final_pts /= np.max(np.sqrt(np.sum(final_pts**2, axis=1)))
 
-    # --- 5. SAVE (FLAT STRUCTURE FOR thesis_dataset.py) ---
-    xyz_dir = os.path.join(OUTPUT_DIR, "xyz")
-    seg_dir = os.path.join(OUTPUT_DIR, "seg")
-    ply_dir = os.path.join(OUTPUT_DIR, "ply")
+    # --- 6. SAVE OUTPUTS ---
+    xyz_dir = os.path.join(output_dir, "xyz")
+    seg_dir = os.path.join(output_dir, "seg")
+    ply_dir = os.path.join(output_dir, "ply")
     
     os.makedirs(xyz_dir, exist_ok=True)
     os.makedirs(seg_dir, exist_ok=True)
     os.makedirs(ply_dir, exist_ok=True)
 
-    # Save Files Directly using base_name to keep outputs clean
-    np.savetxt(os.path.join(xyz_dir, f"{base_name}.xyz"), np.hstack((final_pts, final_nrms)), fmt='%.6f')
-    np.savetxt(os.path.join(seg_dir, f"{base_name}.seg"), final_lbls, fmt='%d')
+    # Save XYZ (Points + Normals) and SEG (Labels)
+    np.savetxt(os.path.join(xyz_dir, f"{part_name}.xyz"), np.hstack((final_pts, final_nrms)), fmt='%.6f')
+    np.savetxt(os.path.join(seg_dir, f"{part_name}.seg"), final_lbls, fmt='%d')
     
     # PLY Visualization
-    safe_lbls = np.clip(final_lbls, 0, len(COLOR_PALETTE)-1)
-    colors = COLOR_PALETTE[safe_lbls]
+    # For PLY viewing, we map the -1 (unmapped) labels to index 14 (Grey color)
+    vis_lbls = np.where(final_lbls == -1, 14, final_lbls)
+    colors = PALETTE[vis_lbls]
+    
     pcd = trimesh.points.PointCloud(vertices=final_pts, colors=colors)
-    pcd.export(os.path.join(ply_dir, f"{base_name}.ply"))
+    pcd.export(os.path.join(ply_dir, f"{part_name}.ply"))
 
-
-# ==========================================
-# --- 4. EXECUTION ---
-# ==========================================
 if __name__ == "__main__":
-    # Ensure the output directory exists
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Point this directly to the root containing your 75 part folders
+    DATASET_ROOT = r"D:\MASTER THESIS\Data\raw\Machining_Tools" 
     
-    # Get all subfolders inside the raw dataset directory
-    part_folders = [f.path for f in os.scandir(RAW_DATASET_DIR) if f.is_dir()]
+    # Output directory for the finished point clouds
+    PROCESSED_ROOT = r"D:\MASTER THESIS\Data\processed\2048\Machining_Tools"
+
+    # Find all subdirectories
+    part_folders = [f.path for f in os.scandir(DATASET_ROOT) if f.is_dir()]
     
-    print(f"Found {len(part_folders)} part folders to process in {RAW_DATASET_DIR}")
+    print(f"Found {len(part_folders)} part folders. Beginning conversion...\n")
     
-    for folder_path in tqdm(part_folders, desc="Processing CAM Dataset"):
-        process_cam_folder(folder_path)
+    for folder in tqdm(part_folders, desc="Processing Parts"):
+        process_single_part(folder, PROCESSED_ROOT)
         
-    print("\n✅ CAM Tooling Dataset Processing Complete.")
-    print(f"Check your output files at: {OUTPUT_DIR}")
+    print("\n✅ Dataset Conversion Complete.")
