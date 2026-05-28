@@ -63,7 +63,7 @@ def get_args():
     parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning Rate')
     parser.add_argument('--workers', type=int, default=8, help='CPU workers for data loading')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--comment', type=str, default="baseline", help='Custom text added to the checkpoint folder name')
     return parser.parse_args()
 
 # --- 5. PLOTTING FUNCTION ---
@@ -106,18 +106,20 @@ def get_model(model_name, num_classes, device):
 def main():
     args = get_args()
     
-    # --- A. ACTIVATE SEEDING (CRITICAL FOR WEIGHTS) ---
-    set_seed(args.seed)
+    # --- A. ACTIVATE SEEDING (HARDCODED) ---
+    HARDCODED_SEED = 42
+    set_seed(HARDCODED_SEED)
     
     # Decouple generators to stop validation splits from shifting the training random baseline
     train_g = torch.Generator()
-    train_g.manual_seed(args.seed)
+    train_g.manual_seed(HARDCODED_SEED)
     
     val_g = torch.Generator()
-    val_g.manual_seed(args.seed)
+    val_g.manual_seed(HARDCODED_SEED)
     
     # --- B. FOLDER SETUP ---
-    experiment_name = f"{args.model}_{args.dataset}_lr{args.lr}_bs{args.batch_size}_ep{args.epochs}_seed{args.seed}"
+    # Injects your custom comment at the end of the folder name
+    experiment_name = f"{args.model}_{args.dataset}_lr{args.lr}_bs{args.batch_size}_ep{args.epochs}_{args.comment}"
     save_dir = os.path.join("checkpoints", experiment_name)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -163,7 +165,7 @@ def main():
         # Save Record
         val_record_path = os.path.join(save_dir, "validation_split.txt")
         with open(val_record_path, "w") as f:
-            f.write(f"Seed Used: {args.seed}\nTotal Val Files: {len(val_file_list)}\n")
+            f.write(f"Seed Used: {HARDCODED_SEED}\nTotal Val Files: {len(val_file_list)}\n")
             for filename in val_file_list: f.write(filename + "\n")
         
         # Loaders with Multi-process Fix
@@ -223,7 +225,7 @@ def main():
     for epoch in range(args.epochs):
 
         # Force shuffling sequence and dataset transformations to reset identically every epoch
-        train_loader.generator.manual_seed(args.seed + epoch)
+        train_loader.generator.manual_seed(HARDCODED_SEED + epoch)
 
         # A. TRAIN
         model.train()
