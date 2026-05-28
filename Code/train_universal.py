@@ -188,15 +188,15 @@ def main():
     model = get_model(args.model, args.classes, device)
     
     # 1. AdamW Optimizer with strict Weight Decay
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.001)
     
     # 2. Build the Hybrid Scheduler
-    warmup_epochs = 10
-    # Ramps from 1% of args.lr up to 100% of args.lr over 10 epochs
+    warmup_epochs = 5
+    # Ramps from 1% of args.lr up to 100% of args.lr over this number of epochs
     warmup_scheduler = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs)
     
     # Cosine decay for the remaining epochs
-    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=(args.epochs - warmup_epochs), eta_min=1e-6)
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=(args.epochs - warmup_epochs), eta_min=1e-5)
     
     # Stitch them together
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs])
