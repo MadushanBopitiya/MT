@@ -3,7 +3,7 @@ import sys
 import argparse
 import torch
 import torch.optim as optim
-from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
+#from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader, random_split
@@ -190,18 +190,18 @@ def main():
     model = get_model(args.model, args.classes, device)
     
     # 1. AdamW Optimizer with strict Weight Decay
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
     # 2. Build the Hybrid Scheduler
-    warmup_epochs = 5
+    # warmup_epochs = 5
     # Ramps from 1% of args.lr up to 100% of args.lr over this number of epochs
-    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs)
+    # warmup_scheduler = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs)
     
     # Cosine decay for the remaining epochs
-    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=(args.epochs - warmup_epochs), eta_min=1e-5)
+    # cosine_scheduler = CosineAnnealingLR(optimizer, T_max=(args.epochs - warmup_epochs), eta_min=1e-5)
     
     # Stitch them together
-    scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs])
+    # scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs])
 
     criterion = nn.NLLLoss()
 
@@ -274,9 +274,9 @@ def main():
         logger.log(log_msg)
 
         # --- NEW: UPDATE LEARNING RATE ---
-        scheduler.step()
-        current_lr = scheduler.get_last_lr()[0]
-        logger.log(f"   -> LR adjusted to: {current_lr:.6f} for next epoch")
+        # scheduler.step()
+        # current_lr = scheduler.get_last_lr()[0]
+        # logger.log(f"   -> LR adjusted to: {current_lr:.6f} for next epoch")
 
         # --- STRATEGY A: Save "Most Correct" Model (Accuracy) ---
         if avg_val_acc > best_val_acc:

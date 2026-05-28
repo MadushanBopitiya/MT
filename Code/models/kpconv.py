@@ -137,8 +137,8 @@ class KPConv(nn.Module):
                                   nn.LeakyReLU(0.2))
         
         # EXPLICIT GRID SUBSAMPLING SIZE (dl_0)
-        # Set to 0.02 to cleanly process a 2048-point cloud density
-        self.dl_0 = 0.02 
+        # CHANGE 0.02 FOR 2048 POINTS AND 0.016 FOR 4096 POINTS
+        self.dl_0 = 0.016 
         
         # Radii calculated strictly via the paper's formula: r = 2.5 * dl
         r1 = 2.5 * self.dl_0               # Stage 1: 0.05

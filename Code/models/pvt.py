@@ -147,7 +147,7 @@ class PVTBlock(nn.Module):
         self.norm_local = nn.BatchNorm1d(channels)
         self.norm_global = nn.BatchNorm1d(channels)
         
-        # Change k=32 to k=16 for the 2048-point density
+        # CHANGE k=32 FOR 4096 POINTS & k=16 FOR 2048 POINTS
         self.voxel_branch = LocalWindowAttention(channels, k=32)
         self.point_branch = RelativeAttention(channels, num_points)
         
