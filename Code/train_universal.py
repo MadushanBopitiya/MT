@@ -21,7 +21,7 @@ from dataloaders.thesis_dataset import ThesisDataset
 from models.pointnet2 import PointNet2
 from models.dgcnn import DGCNN
 from models.kpconv import KPConv          
-# from models.point_transformer import PointTransformer
+from models.pt import PointTransformer
 from models.pvt import PVT
 
 # --- 2. SEEDING & REPRODUCIBILITY UTILITIES (RE-INSERTED) ---
@@ -99,6 +99,9 @@ def get_model(model_name, num_classes, device):
     elif model_name == "PVT":
         # Pass 4096 (or 2048) down to ensure the Relative Attention constructs correctly
         return PVT(num_classes=num_classes, num_points=4096).to(device)
+    elif model_name == "PointTransformer":
+        # Pass the point density (4096) and your target radius (k=32) directly here
+        return PointTransformer(num_classes=num_classes, num_points=4096, k=32).to(device)
     else:
         raise ValueError(f"❌ Unknown Model: {model_name}")
 
