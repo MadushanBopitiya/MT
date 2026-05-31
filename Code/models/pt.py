@@ -11,11 +11,19 @@ def knn(x, y, k):
     y: [B, 3, M] (Dataset points)
     Returns: [B, N, k] indices
     """
+    # --- NEW: Dynamic k-capping ---
+    # Prevents crash if the downsampled point count drops below our target 'k'
+    num_available_points = y.shape[2]
+    actual_k = min(k, num_available_points)
+    # ------------------------------
+    
     inner = -2 * torch.matmul(x.transpose(2, 1), y)
     xx = torch.sum(x ** 2, dim=1, keepdim=True).transpose(2, 1)
     yy = torch.sum(y ** 2, dim=1, keepdim=True)
     pairwise_distance = -xx - inner - yy
-    idx = pairwise_distance.topk(k=k, dim=-1)[1]
+    
+    # Use actual_k to avoid out-of-bounds error
+    idx = pairwise_distance.topk(k=actual_k, dim=-1)[1]
     return idx
 
 def index_points(points, idx):
