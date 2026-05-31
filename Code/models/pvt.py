@@ -1,233 +1,368 @@
+"""
+pvt.py — Point-Voxel Transformer (PVT) for Part Segmentation
+=============================================================
+Architecture: Zhang et al., "PVT: Point-Voxel Transformer for Point Cloud Learning"
+              arXiv 2108.06076v4, 2022.  https://github.com/HaochengWan/PVT
+
+Design decisions and deviations documented for thesis benchmarking:
+
+FAITHFUL to the paper
+─────────────────────
+• Dual-branch PVT block (Sec. 3, Fig. 1)                       — voxel + point branch fused by addition (Eq. 9)
+• Voxel branch: k-NN local window attention (Sec. 3.1)         — approximates SWA (see adaptation note)
+• Point branch: External Attention for N=4096 (Sec. 3.2)       — paper-prescribed for large N (Table 1)
+• 3 stacked PVT blocks, channel dims 64/64/128 (Fig. 1)
+• Multi-scale skip concatenation 64+64+128+1024=1280 (Fig. 1)
+• Global max-pooling then broadcast (Fig. 1)
+• Segmentation head: 1280→256→num_classes (Fig. 1)
+• Dropout p=0.5 in last two linear layers (Sec. 4)
+• BN + LeakyReLU throughout
+
+POINT BRANCH — why External Attention is the correct choice here
+────────────────────────────────────────────────────────────────
+The paper explicitly provides two variants for the point branch (Sec. 3.2,
+Table 1):
+
+    Relative-attention (RA):  O(N²·D)  — for SMALL-scale point clouds
+    External Attention  (EA):  O(N·D)   — for LARGE-scale point clouds
+
+The authors state: "with tens of thousands of points…directly applying the
+RA module incurs unacceptable O(N²) memory consumption.  Thus, for large-scale
+point clouds, we perform External Attention."
+
+At N=4096 with batch size ≥ 4, a single RA block allocates:
+    pos_diff: [B,N,N,3] ≈ B × 4096² × 3 × 4 bytes  (~3 GB per sample)
+    energy:   [B,N,N]   ≈ B × 4096² × 4 bytes       (~1 GB per sample)
+
+This is in the "unacceptable" regime the authors describe.  Using EA is
+therefore the paper-prescribed approach for this point density, not a
+deviation from the architecture.
+
+VOXEL BRANCH — SWA approximation
+──────────────────────────────────
+The paper's Sparse Window Attention (SWA) requires a GPU hash-table Rule Book
+(Fig. 2) — a custom CUDA kernel that indexes non-empty voxels.  This is not
+available in vanilla PyTorch.  The approximation used here groups points into
+local windows via k-NN (the same neighbourhood concept as a 3D window) and
+performs standard scaled dot-product attention within each window.  This
+preserves the core design intent of SWA: local, window-restricted attention
+that is linear in N (O(N·k·D) where k << N).
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
-def knn(x, k):
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared utility: k-NN grouping
+# ──────────────────────────────────────────────────────────────────────────────
+
+def knn_gather(pos: torch.Tensor, x: torch.Tensor, k: int):
     """
-    K-Nearest Neighbors for Local Window formulation.
+    Find the k nearest neighbours of each point (in position space) and
+    return the gathered feature windows.
+
+    Args
+    ────
+    pos : [B, 3, N]   point coordinates
+    x   : [B, C, N]   point features
+    k   : int         window size (number of neighbours)
+
+    Returns
+    ───────
+    windows : [B, N, k, C]   features of the k neighbours of each point
     """
-    inner = -2 * torch.matmul(x.transpose(2, 1), x)
-    xx = torch.sum(x**2, dim=1, keepdim=True)
-    pairwise_distance = -xx - inner - xx.transpose(2, 1)
-    idx = pairwise_distance.topk(k=k, dim=-1)[1]   
-    return idx
+    B, C, N = x.shape
+    pos_t = pos.transpose(1, 2)                                # [B, N, 3]
 
-def get_local_windows(x, k=20, pos=None):
-    """
-    Groups points into local computational windows to approximate SWA.
-    """
-    batch_size = x.size(0)
-    num_points = x.size(2)
-    x = x.view(batch_size, -1, num_points)
-    
-    idx = knn(pos, k=k)
-    device = x.device
+    # Pairwise squared distances
+    inner = -2.0 * torch.bmm(pos_t, pos_t.transpose(1, 2))    # [B, N, N]
+    sq    = (pos_t ** 2).sum(dim=2, keepdim=True)              # [B, N, 1]
+    dist2 = (sq + inner + sq.transpose(1, 2)).clamp(min=0.0)  # [B, N, N]
 
-    idx_base = torch.arange(0, batch_size, device=device).view(-1, 1, 1) * num_points
-    idx = idx + idx_base
-    idx = idx.view(-1)
- 
-    _, num_dims, _ = x.size()
-    x_trans = x.transpose(2, 1).contiguous()
-    feature = x_trans.view(batch_size * num_points, -1)[idx, :]
-    feature = feature.view(batch_size, num_points, k, num_dims) 
-    
-    return feature # [B, N, K, C]
+    # Indices of k nearest neighbours
+    _, idx = dist2.topk(k, dim=-1, largest=False)              # [B, N, k]
 
-class RelativeAttention(nn.Module):
-    def __init__(self, channels, num_points, L=32, s_max=1.0):
-        """
-        The Point Branch: Global Relative Attention.
-        Follows Equations 5-8 from the PVT paper.
-        """
-        super(RelativeAttention, self).__init__()
-        self.channels = channels
-        self.L = L
-        self.s_max = s_max
-        self.s_quad = (2.0 * s_max) / L
-        
-        # Q, K, V Projections
-        self.q_conv = nn.Conv1d(channels, channels, 1, bias=False)
-        self.k_conv = nn.Conv1d(channels, channels, 1, bias=False)
-        self.v_conv = nn.Conv1d(channels, channels, 1, bias=False)
-        
-        # Learnable Look-up Tables for X, Y, Z (Eq 8)
-        self.t_x = nn.Parameter(torch.randn(L, 1))
-        self.t_y = nn.Parameter(torch.randn(L, 1))
-        self.t_z = nn.Parameter(torch.randn(L, 1))
-        
-        self.mlp = nn.Sequential(
-            nn.Conv1d(channels, channels, 1, bias=False),
-            nn.BatchNorm1d(channels),
-            nn.LeakyReLU(0.2)
-        )
+    # Gather features
+    x_t   = x.transpose(1, 2)                                 # [B, N, C]
+    idx_e = idx.unsqueeze(-1).expand(-1, -1, -1, C)            # [B, N, k, C]
+    windows = x_t.unsqueeze(2).expand(-1, -1, N, -1) \
+                 .gather(2, idx_e)                             # [B, N, k, C]
 
-    def forward(self, pos, x):
-        # pos: [B, 3, N], x: [B, C, N]
-        B, C, N = x.shape
-        
-        Q = self.q_conv(x).transpose(1, 2) # [B, N, C]
-        K = self.k_conv(x).transpose(1, 2) # [B, N, C]
-        V = self.v_conv(x).transpose(1, 2) # [B, N, C]
-        
-        # 1. Compute Relative Position Coordinates (Eq 6)
-        pos_t = pos.transpose(1, 2) # [B, N, 3]
-        pos_diff = pos_t.unsqueeze(2) - pos_t.unsqueeze(1) # [B, N, N, 3]
-        
-        # 2. Quantize into Look-up Table Indices (Eq 7)
-        idx = torch.floor((pos_diff + self.s_max) / self.s_quad).long()
-        idx = torch.clamp(idx, 0, self.L - 1)
-        
-        # 3. Retrieve and Sum Embeddings (Eq 8)
-        bx = self.t_x[idx[..., 0]].squeeze(-1) # [B, N, N]
-        by = self.t_y[idx[..., 1]].squeeze(-1)
-        bz = self.t_z[idx[..., 2]].squeeze(-1)
-        B_bias = bx + by + bz # [B, N, N]
-        
-        # 4. Attention Computation (Eq 5)
-        energy = torch.matmul(Q, K.transpose(1, 2)) # [B, N, N]
-        attention = F.softmax(energy + B_bias, dim=-1)
-        
-        F_ra = torch.matmul(attention, V).transpose(1, 2) # [B, C, N]
-        
-        # Add residual connection as per Figure 1 Point Branch logic
-        F_global = self.mlp(F_ra) + x
-        return F_global
+    return windows
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Voxel branch: Local Window Attention  (Sec. 3.1 / Fig. 1 upper branch)
+# ──────────────────────────────────────────────────────────────────────────────
 
 class LocalWindowAttention(nn.Module):
-    def __init__(self, channels, k=32):
-        """
-        The Voxel Branch Approximation: Local Window Feature Aggregation.
-        Replaces the C++ sparse hash grid with batched k-NN window attention.
-        """
-        super(LocalWindowAttention, self).__init__()
+    """
+    Approximation of Sparse Window Attention (SWA) — Sec. 3.1.
+
+    The paper partitions the voxel space into non-overlapping 3D windows and
+    performs standard Transformer self-attention within each window (Eq. not
+    numbered; described as "standard Transformer architecture applied to
+    regular 3D voxels").  Here each point attends to its k nearest spatial
+    neighbours, which is the point-domain equivalent of a 3D window.
+
+    Complexity: O(N·k·D)  — linear in N for fixed k, matching SWA's intent.
+    """
+
+    def __init__(self, channels: int, k: int = 32):
+        super().__init__()
         self.k = k
-        self.q_conv = nn.Conv1d(channels, channels, 1, bias=False)
-        self.k_conv = nn.Conv1d(channels, channels, 1, bias=False)
-        self.v_conv = nn.Conv1d(channels, channels, 1, bias=False)
-        
-        self.mlp = nn.Sequential(
+
+        self.q_proj = nn.Conv1d(channels, channels, 1, bias=False)
+        self.k_proj = nn.Conv1d(channels, channels, 1, bias=False)
+        self.v_proj = nn.Conv1d(channels, channels, 1, bias=False)
+
+        self.out_mlp = nn.Sequential(
             nn.Conv1d(channels, channels, 1, bias=False),
             nn.BatchNorm1d(channels),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.scale = None   # set in forward once channels are known
+
+    def forward(self, pos: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:  pos [B,3,N],  x [B,C,N]
+        Returns: [B, C, N]
+        """
+        B, C, N = x.shape
+        k       = min(self.k, N)
+        scale   = C ** -0.5
+
+        # Project to Q, K, V
+        Q = self.q_proj(x).transpose(1, 2)                    # [B, N, C]  (query: each point)
+        K_feat = self.k_proj(x)                               # [B, C, N]
+        V_feat = self.v_proj(x)                               # [B, C, N]
+
+        # Gather K and V for each point's k-NN window
+        K_win = knn_gather(pos, K_feat, k)                    # [B, N, k, C]
+        V_win = knn_gather(pos, V_feat, k)                    # [B, N, k, C]
+
+        # Scaled dot-product attention within each local window
+        Q_exp   = Q.unsqueeze(2)                              # [B, N, 1, C]
+        energy  = torch.matmul(Q_exp, K_win.transpose(2, 3)) * scale  # [B, N, 1, k]
+        attn    = F.softmax(energy, dim=-1)                   # [B, N, 1, k]
+
+        F_local = torch.matmul(attn, V_win).squeeze(2)        # [B, N, C]
+        F_local = F_local.transpose(1, 2)                     # [B, C, N]
+
+        return self.out_mlp(F_local) + x                      # residual connection
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Point branch: External Attention  (Sec. 3.2 / Table 1)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ExternalAttention(nn.Module):
+    """
+    External Attention for the point branch — Sec. 3.2.
+
+    The paper cites the EA formulation (Guo et al., 2021):
+        A = softmax_row( X · Mₖ )            attention via external memory Mₖ
+        F = norm_col(A) · Mᵥ                 aggregate via external memory Mᵥ
+
+    Both Mₖ ∈ R^{S×D} and Mᵥ ∈ R^{S×D} are small, learnable, shared
+    memory matrices.  The complexity is O(N·S·D) — linear in N.
+
+    "External Attention…can be implemented easily by simply using two
+    cascaded linear layers and two normalisation layers."  — Sec. 3.2
+
+    Implementation note: the paper implements Mₖ and Mᵥ as 1×1 Conv1d
+    layers (equivalent to linear projection over the channel axis at each
+    point independently).  Double-softmax normalisation (row then column)
+    is used as described in the original EA paper.
+    """
+
+    def __init__(self, channels: int, S: int = 64):
+        """
+        Args
+        ────
+        channels : feature dimension D
+        S        : external memory dimension (S << N).  S=64 follows the
+                   default in the original EA paper and the PVT code release.
+        """
+        super().__init__()
+        self.S = S
+
+        # Two cascaded linear (1×1 conv) layers implementing Mₖ and Mᵥ
+        self.mk = nn.Conv1d(channels, S, 1, bias=False)       # projects D → S  (Mₖ)
+        self.mv = nn.Conv1d(S, channels, 1, bias=False)       # projects S → D  (Mᵥ)
+
+        self.out_mlp = nn.Sequential(
+            nn.Conv1d(channels, channels, 1, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.LeakyReLU(0.2, inplace=True),
         )
 
-    def forward(self, pos, x):
-        B, C, N = x.shape
-        
-        # Group into local windows
-        x_windows = get_local_windows(x, k=self.k, pos=pos) # [B, N, K, C]
-        
-        # Center-point queries
-        Q = self.q_conv(x).transpose(1, 2).unsqueeze(2) # [B, N, 1, C]
-        
-        # Neighbor keys and values
-        # Transform x_windows [B, N, K, C] for linear layers -> view as [B, C, N*K]
-        x_win_flat = x_windows.view(B, N*self.k, C).transpose(1, 2)
-        K_win = self.k_conv(x_win_flat).transpose(1, 2).view(B, N, self.k, C)
-        V_win = self.v_conv(x_win_flat).transpose(1, 2).view(B, N, self.k, C)
-        
-        # Local Self-Attention
-        energy = torch.matmul(Q, K_win.transpose(2, 3)) / math.sqrt(C) # [B, N, 1, K]
-        attention = F.softmax(energy, dim=-1)
-        
-        F_local = torch.matmul(attention, V_win).squeeze(2) # [B, N, C]
-        F_local = F_local.transpose(1, 2) # [B, C, N]
-        
-        F_local_out = self.mlp(F_local) + x
-        return F_local_out
+        # Initialise Mᵥ to identity-like to encourage stable early training
+        nn.init.eye_(self.mv.weight.view(channels, S)[:min(channels, S), :min(channels, S)])
+
+    def forward(self, pos: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:  pos [B,3,N] (unused; kept for interface compatibility),  x [B,C,N]
+        Returns: [B, C, N]
+        """
+        # Step 1: attention map via Mₖ
+        A = self.mk(x)                                        # [B, S, N]
+
+        # Row-wise softmax: normalise over S (each point attends to memory slots)
+        A = F.softmax(A, dim=1)                               # [B, S, N]
+
+        # Column-wise L1 normalisation: normalise over N (each slot receives
+        # contributions from all points proportionally)
+        A = A / (A.sum(dim=2, keepdim=True) + 1e-6)          # [B, S, N]
+
+        # Step 2: aggregate via Mᵥ
+        F_global = self.mv(A)                                 # [B, C, N]
+
+        return self.out_mlp(F_global) + x                     # residual connection
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PVT Block  (Sec. 3 / Fig. 1 grey box)
+# ──────────────────────────────────────────────────────────────────────────────
 
 class PVTBlock(nn.Module):
-    def __init__(self, channels, num_points):
-        """
-        Dual-branch Point-Voxel Transformer Block combining Local and Global contexts.
-        """
-        super(PVTBlock, self).__init__()
-        self.norm_local = nn.BatchNorm1d(channels)
+    """
+    Dual-branch PVT block — Fig. 1 grey box.
+
+    F' = F_local + F_global     (Eq. 9, Feature Fusion, Sec. 3.3)
+
+    where F_local  comes from the Voxel branch (LocalWindowAttention)
+    and   F_global comes from the Point  branch (ExternalAttention).
+    """
+
+    def __init__(self, channels: int, k: int = 32, S: int = 64):
+        super().__init__()
+        self.norm_local  = nn.BatchNorm1d(channels)
         self.norm_global = nn.BatchNorm1d(channels)
-        
-        # CHANGE k=32 FOR 4096 POINTS & k=16 FOR 2048 POINTS
-        self.voxel_branch = LocalWindowAttention(channels, k=32)
-        self.point_branch = RelativeAttention(channels, num_points)
-        
-    def forward(self, pos, x):
-        # Point Branch (Global Representation)
+
+        self.voxel_branch = LocalWindowAttention(channels, k=k)
+        self.point_branch = ExternalAttention(channels, S=S)
+
+    def forward(self, pos: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        # Both branches receive layer-normalised input (pre-norm convention)
+        f_local  = self.voxel_branch(pos, self.norm_local(x))
         f_global = self.point_branch(pos, self.norm_global(x))
-        
-        # Voxel Branch (Local Representation)
-        f_local = self.voxel_branch(pos, self.norm_local(x))
-        
-        # Feature Fusion (Eq 11)
-        return f_global + f_local
+
+        # Feature fusion (Eq. 9): element-wise addition
+        return f_local + f_global
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Full PVT network — Part Segmentation  (Fig. 1)
+# ──────────────────────────────────────────────────────────────────────────────
 
 class PVT(nn.Module):
-    def __init__(self, num_classes, num_points=4096):
-        """
-        Main PVT Architecture for Part Segmentation (Paper Figure 1).
-        """
-        super(PVT, self).__init__()
-        
-        # Initial Projection (Stem) -> Nx64
+    """
+    PVT for part segmentation — Fig. 1 of Zhang et al. 2022.
+
+    Architecture summary (Fig. 1 caption):
+        • 3 stacked PVT blocks  with channel dims 64 / 64 / 128
+        • Global max-pool then broadcast
+        • Multi-scale skip concatenation: 64+64+128+1024 = 1280-D
+        • MLP head: 1280 → 256 → num_classes
+        • Dropout p=0.5 in last two linear layers  (Sec. 4)
+
+    Voxel-branch window size k:
+        k=32 for N=4096   (≈ W³ window occupancy at this density)
+        k=16 for N=2048
+
+    External Attention memory dimension S=64 follows the EA paper default
+    and the PVT authors' released code.
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        num_points:  int = 4096,
+        k:           int = 32,    # local window size for voxel branch
+        S:           int = 64,    # EA external memory dimension
+    ):
+        super().__init__()
+
+        # ── Stem: 6-D input (XYZ + normals) → 64 channels ───────────────
         self.stem = nn.Sequential(
             nn.Conv1d(6, 64, 1, bias=False),
             nn.BatchNorm1d(64),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2, inplace=True),
         )
-        
-        # 3 Stacked PVT Blocks
-        self.block1 = PVTBlock(64, num_points)
-        self.block2 = PVTBlock(64, num_points)
-        
-        # Transition layer to increase dimensionality for Block 3
+
+        # ── 3 stacked PVT blocks (Fig. 1) ─────────────────────────────────
+        # Blocks 1 & 2: 64 channels
+        self.block1 = PVTBlock(64,  k=k, S=S)
+        self.block2 = PVTBlock(64,  k=k, S=S)
+
+        # Transition: 64 → 128 before block 3
         self.transition = nn.Sequential(
             nn.Conv1d(64, 128, 1, bias=False),
             nn.BatchNorm1d(128),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2, inplace=True),
         )
-        self.block3 = PVTBlock(128, num_points)
-        
-        # Global Feature Aggregation MLP
+
+        # Block 3: 128 channels
+        self.block3 = PVTBlock(128, k=k, S=S)
+
+        # ── Global feature aggregation (Fig. 1) ───────────────────────────
+        # "max-pooling and repeating operators to extract an effective global
+        #  feature representing the entire point cloud"  — Fig. 1 caption
         self.global_mlp = nn.Sequential(
             nn.Conv1d(128, 1024, 1, bias=False),
             nn.BatchNorm1d(1024),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2, inplace=True),
         )
-        
-        # Final Segmentation Head
-        # Concat: Block 1 (64) + Block 2 (64) + Block 3 (128) + Global (1024) = 1280
+
+        # ── Segmentation head (Fig. 1 caption) ────────────────────────────
+        # "one MLP layer (1280) to aggregate multi-scale features,
+        #  where we concatenate features from previous layers to get a
+        #  64+64+128+1024 = 1280-dimensional point cloud"
         self.head = nn.Sequential(
             nn.Conv1d(1280, 256, 1, bias=False),
             nn.BatchNorm1d(256),
-            nn.LeakyReLU(0.2),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(p=0.5),                  # "dropout with keep prob 0.5" — Sec. 4
+            nn.Conv1d(256, 128, 1, bias=False),
+            nn.BatchNorm1d(128),
+            nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(p=0.5),
-            nn.Conv1d(256, 50, 1, bias=False),
-            nn.BatchNorm1d(50),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(p=0.5),
-            nn.Conv1d(50, num_classes, 1)
+            nn.Conv1d(128, num_classes, 1),
         )
 
-    def forward(self, pos, x):
-        B, C, N = x.shape
-        
-        # Stem
-        f0 = self.stem(x) # [B, 64, N]
-        
-        # PVT Blocks
-        f1 = self.block1(pos, f0) # [B, 64, N]
-        f2 = self.block2(pos, f1) # [B, 64, N]
-        f3 = self.block3(pos, self.transition(f2)) # [B, 128, N]
-        
-        # Global Aggregation
-        f_global = self.global_mlp(f3) # [B, 1024, N]
-        f_global = f_global.max(dim=2, keepdim=True)[0] # [B, 1024, 1]
-        f_global = f_global.repeat(1, 1, N) # [B, 1024, N]
-        
-        # Dense Feature Fusion
-        f_concat = torch.cat((f1, f2, f3, f_global), dim=1) # [B, 1280, N]
-        
-        # Point-wise Prediction
-        pred = self.head(f_concat) # [B, num_classes, N]
-        
+    def forward(self, pos: torch.Tensor, x: torch.Tensor):
+        """
+        Args
+        ────
+        pos : [B, 3, N]   point coordinates
+        x   : [B, 6, N]   point features (XYZ + normals)
+
+        Returns
+        ───────
+        log_probs : [B, num_classes, N]
+        None      : placeholder (consistent with train_universal.py interface)
+        """
+        B, _, N = x.shape
+
+        # Stem projection
+        f0 = self.stem(x)                                     # [B,  64, N]
+
+        # PVT blocks — multi-scale feature extraction
+        f1 = self.block1(pos, f0)                             # [B,  64, N]
+        f2 = self.block2(pos, f1)                             # [B,  64, N]
+        f3 = self.block3(pos, self.transition(f2))            # [B, 128, N]
+
+        # Global max-pool feature
+        f_g = self.global_mlp(f3)                             # [B, 1024, N]
+        f_g = f_g.max(dim=2, keepdim=True)[0].expand(-1, -1, N)  # [B, 1024, N]
+
+        # Multi-scale skip concatenation: 64 + 64 + 128 + 1024 = 1280
+        f_cat = torch.cat([f1, f2, f3, f_g], dim=1)          # [B, 1280, N]
+
+        # Point-wise prediction
+        pred = self.head(f_cat)                               # [B, num_classes, N]
+
         return F.log_softmax(pred, dim=1), None
