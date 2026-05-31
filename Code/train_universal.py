@@ -7,6 +7,7 @@ import torch.optim as optim
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader, random_split
+from torch.cuda.amp import GradScaler, autocast   # AMP — halves memory for KPConv & PVT
 from tqdm import tqdm
 import matplotlib
 import matplotlib.pyplot as plt
@@ -64,6 +65,8 @@ def get_args():
     parser.add_argument('--lr', type=float, default=0.001, help='Learning Rate')
     parser.add_argument('--workers', type=int, default=8, help='CPU workers for data loading')
     parser.add_argument('--comment', type=str, default="baseline", help='Custom text added to the checkpoint folder name')
+    parser.add_argument('--num_points', type=int, default=4096, help='Point cloud density (4096 or 2048)')
+    parser.add_argument('--grad_accum', type=int, default=1, help='Gradient accumulation steps (e.g. 4 with --batch_size 4 gives effective bs=16)')
     return parser.parse_args()
 
 # --- 5. PLOTTING FUNCTION ---
@@ -88,20 +91,23 @@ def update_loss_curve(history, save_path):
     plt.close()
 
 # --- 6. MODEL FACTORY ---
-def get_model(model_name, num_classes, device):
+def get_model(model_name, num_classes, num_points, device):
     if model_name == "PointNet2":
-        return PointNet2(num_classes=num_classes, normal_channel=True).to(device)    
+        return PointNet2(num_classes=num_classes, normal_channel=True).to(device)
     elif model_name == "DGCNN":
         # k=40 is standard for 2048 points DGCNN segmentation
         return DGCNN(num_classes=num_classes, k=40).to(device)
     elif model_name == "KPConv":
-        return KPConv(num_classes=num_classes).to(device)
+        # dl0 scales with point density: 0.016 for N=4096, 0.02 for N=2048 (Sec. 3.3)
+        # K_nb=40 caps the radius neighbourhood for the vectorised forward pass
+        return KPConv(num_classes=num_classes, K_nb=40).to(device)
     elif model_name == "PVT":
-        # Pass 4096 (or 2048) down to ensure the Relative Attention constructs correctly
-        return PVT(num_classes=num_classes, num_points=4096).to(device)
+        # k=32 local window for N=4096, k=16 for N=2048 (voxel branch)
+        # S=64 external attention memory dimension (point branch, Sec. 3.2)
+        k = 32 if num_points >= 4096 else 16
+        return PVT(num_classes=num_classes, num_points=num_points, k=k, S=64).to(device)
     elif model_name == "PointTransformer":
-        # Pass the point density (4096) and your target radius (k=32) directly here
-        return PointTransformer(num_classes=num_classes, num_points=4096, k=32).to(device)
+        return PointTransformer(num_classes=num_classes, num_points=num_points, k=32).to(device)
     else:
         raise ValueError(f"❌ Unknown Model: {model_name}")
 
@@ -190,10 +196,20 @@ def main():
 
     # --- D. BUILD MODEL ---
     # Because set_seed was called earlier, these weights are now deterministic
-    model = get_model(args.model, args.classes, device)
+    model = get_model(args.model, args.classes, args.num_points, device)
     
     # 1. AdamW Optimizer with strict Weight Decay
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+
+    # 2. AMP GradScaler — active for KPConv and PVT; no-op for all other models
+    # Halves GPU memory by keeping activations in float16 during the forward pass.
+    # GradScaler handles the loss scaling needed to keep fp16 gradients stable.
+    use_amp = args.model in ("KPConv", "PVT") and device.type == "cuda"
+    scaler  = GradScaler(enabled=use_amp)
+
+    effective_bs = args.batch_size * args.grad_accum
+    logger.log(f"AMP enabled: {use_amp} | Batch size: {args.batch_size} | "
+               f"Grad accum steps: {args.grad_accum} | Effective batch size: {effective_bs}")
     
     # 2. Build the Hybrid Scheduler
     # warmup_epochs = 5
@@ -235,18 +251,32 @@ def main():
         train_loss, train_correct, train_total = 0.0, 0, 0
         pbar = tqdm(train_loader, desc=f"Ep {epoch+1}/{args.epochs}", ncols=100)
         
-        for batch in pbar:
-            optimizer.zero_grad()
+        optimizer.zero_grad()   # zero once before the accumulation loop
+
+        for step, batch in enumerate(pbar):
             pos, x, y = batch['pos'].to(device), batch['x'].to(device), batch['y'].to(device)
-            pred, _ = model(pos, x)
-            loss = criterion(pred, y)
-            loss.backward()
-            optimizer.step()
-            
-            train_loss += loss.item()
+
+            # Forward pass inside autocast (fp16 where possible, fp32 for BN/softmax)
+            with autocast(enabled=use_amp):
+                pred, _ = model(pos, x)
+                # Divide loss by accum steps so gradients average correctly
+                loss = criterion(pred, y) / args.grad_accum
+
+            # Backward pass via scaler (no-op scaling when AMP is off)
+            scaler.scale(loss).backward()
+
+            # Only update weights after grad_accum mini-batches
+            if (step + 1) % args.grad_accum == 0 or (step + 1) == len(train_loader):
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+            # Logging uses the unscaled loss value
+            true_loss = loss.item() * args.grad_accum
+            train_loss    += true_loss
             train_correct += pred.max(1)[1].eq(y).sum().item()
-            train_total += y.numel()
-            pbar.set_postfix({'loss': f"{loss.item():.4f}"})
+            train_total   += y.numel()
+            pbar.set_postfix({'loss': f"{true_loss:.4f}"})
             
         avg_train_loss = train_loss / len(train_loader)
         avg_train_acc = (train_correct / train_total) * 100
@@ -257,7 +287,8 @@ def main():
         with torch.no_grad():
             for batch in val_loader:
                 pos, x, y = batch['pos'].to(device), batch['x'].to(device), batch['y'].to(device)
-                pred, _ = model(pos, x)
+                with autocast(enabled=use_amp):
+                    pred, _ = model(pos, x)
                 val_loss += criterion(pred, y).item()
                 val_correct += pred.max(1)[1].eq(y).sum().item()
                 val_total += y.numel()
