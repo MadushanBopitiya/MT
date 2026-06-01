@@ -267,6 +267,17 @@ def main():
 
             # Only update weights after grad_accum mini-batches
             if (step + 1) % args.grad_accum == 0 or (step + 1) == len(train_loader):
+                # Unscale gradients in-place so we can clip them in their true range.
+                # When AMP is off this is a no-op.
+                scaler.unscale_(optimizer)
+
+                # Gradient clipping: caps the global gradient norm at max_norm.
+                # Prevents a single bad batch from triggering an explosion that
+                # eventually surfaces as NaN losses several epochs later.
+                # max_norm=1.0 is the standard default used in Transformer
+                # codebases (HuggingFace, fairseq, official Point Transformer).
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
