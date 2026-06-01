@@ -203,14 +203,26 @@ class SimpleKPConv(nn.Module):
         corr = corr * radius_mask.unsqueeze(-1).float()            # [B, N, K_nb, Kp]
 
         # ── Step 6: weighted aggregation  (Eq. 2) ─────────────────────────
-        # Blended weight for each neighbour:
-        #   blended[b,n,nb,c_in,c_out] = Σₖ corr[b,n,nb,k] · W[k,c_in,c_out]
-        blended = torch.einsum('bnmk,kco->bnmco', corr, self.weights)
-        # [B, N, K_nb, C, C_out]
+        # Equation 2 in tensor index form:
+        #   out[b,n,c'] = Σ_m Σ_c Σ_k corr[b,n,m,k] · W[k,c,c'] · feat[b,n,m,c]
+        #
+        # The order in which the three sums are taken is mathematically free,
+        # but determines the peak intermediate tensor size.  Summing over k
+        # first creates [B,N,K_nb,C_in,C_out] which is catastrophic at
+        # stage 4 (e.g. 86 GB at B=8, N=4096, K_nb=40, C=128).
+        #
+        # Summing over m (neighbours) first instead reduces the peak to
+        # [B,N,Kp,C_in] (~0.25 GB at stage 4) — a 340× reduction.
+        # Memory-safe formulation:
+        #   step A:  agg[b,n,k,c] = Σ_m corr[b,n,m,k] · feat[b,n,m,c]
+        #   step B:  out[b,n,c'] = Σ_k,c agg[b,n,k,c] · W[k,c,c']
 
-        # Apply to neighbour features and sum over neighbours:
-        #   out[b,n,c_out] = Σₘ Σ_c feat[b,n,m,c] · blended[b,n,m,c,c_out]
-        out = torch.einsum('bnmc,bnmco->bno', neigh_feat, blended)
+        # Step A: aggregate features per kernel point
+        agg = torch.einsum('bnmk,bnmc->bnkc', corr, neigh_feat)
+        # [B, N, Kp, C_in]
+
+        # Step B: apply the per-kernel-point weight matrices
+        out = torch.einsum('bnkc,kco->bno', agg, self.weights)
         # [B, N, C_out]
 
         return out.transpose(1, 2).contiguous()                    # [B, C_out, N]
