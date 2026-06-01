@@ -129,13 +129,24 @@ class LocalWindowAttention(nn.Module):
         """
         Args:  pos [B,3,N],  x [B,C,N]
         Returns: [B, C, N]
+
+        NaN-stability note
+        ──────────────────
+        The attention dot-product, softmax, and value aggregation are computed
+        in fp32 even when the surrounding code runs under torch.cuda.amp.
+        Softmax in fp16 can overflow (fp16 max ≈ 65 504) once attention logits
+        grow during training — a delayed NaN at epoch ~10–20 is the canonical
+        symptom and was observed in initial runs of this model.
+        Forcing fp32 only inside the attention math costs negligible memory but
+        eliminates the overflow path.  This is standard practice in modern
+        Transformer codebases (e.g. HuggingFace, fairseq).
         """
         B, C, N = x.shape
         k       = min(self.k, N)
         scale   = C ** -0.5
 
         # Project to Q, K, V
-        Q = self.q_proj(x).transpose(1, 2)                    # [B, N, C]  (query: each point)
+        Q = self.q_proj(x).transpose(1, 2)                    # [B, N, C]
         K_feat = self.k_proj(x)                               # [B, C, N]
         V_feat = self.v_proj(x)                               # [B, C, N]
 
@@ -143,15 +154,21 @@ class LocalWindowAttention(nn.Module):
         K_win = knn_gather(pos, K_feat, k)                    # [B, N, k, C]
         V_win = knn_gather(pos, V_feat, k)                    # [B, N, k, C]
 
-        # Scaled dot-product attention within each local window
-        Q_exp   = Q.unsqueeze(2)                              # [B, N, 1, C]
-        energy  = torch.matmul(Q_exp, K_win.transpose(2, 3)) * scale  # [B, N, 1, k]
-        attn    = F.softmax(energy, dim=-1)                   # [B, N, 1, k]
+        # ── fp32 attention block (AMP-safe) ──────────────────────────────
+        with torch.cuda.amp.autocast(enabled=False):
+            Q_exp   = Q.float().unsqueeze(2)                          # [B, N, 1, C]
+            K_win32 = K_win.float()                                   # [B, N, k, C]
+            V_win32 = V_win.float()                                   # [B, N, k, C]
 
-        F_local = torch.matmul(attn, V_win).squeeze(2)        # [B, N, C]
-        F_local = F_local.transpose(1, 2)                     # [B, C, N]
+            energy  = torch.matmul(Q_exp, K_win32.transpose(2, 3)) * scale  # [B, N, 1, k]
+            attn    = F.softmax(energy, dim=-1)                       # [B, N, 1, k]
+            F_local = torch.matmul(attn, V_win32).squeeze(2)          # [B, N, C]
 
-        return self.out_mlp(F_local) + x                      # residual connection
+        # Return to caller's dtype (fp16 under AMP, fp32 otherwise) for the
+        # downstream MLP and residual connection
+        F_local = F_local.to(x.dtype).transpose(1, 2)                 # [B, C, N]
+
+        return self.out_mlp(F_local) + x                              # residual
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -206,21 +223,30 @@ class ExternalAttention(nn.Module):
         """
         Args:  pos [B,3,N] (unused; kept for interface compatibility),  x [B,C,N]
         Returns: [B, C, N]
+
+        NaN-stability note — see LocalWindowAttention.forward() docstring.
+        Softmax (dim=1) and the column-normalisation division can both
+        overflow / divide-by-tiny in fp16; the entire EA block therefore
+        runs in fp32 under AMP.
         """
-        # Step 1: attention map via Mₖ
-        A = self.mk(x)                                        # [B, S, N]
+        # ── fp32 attention block (AMP-safe) ──────────────────────────────
+        with torch.cuda.amp.autocast(enabled=False):
+            x32 = x.float()
 
-        # Row-wise softmax: normalise over S (each point attends to memory slots)
-        A = F.softmax(A, dim=1)                               # [B, S, N]
+            # Step 1: attention map via Mₖ
+            A = self.mk(x32)                                          # [B, S, N]
 
-        # Column-wise L1 normalisation: normalise over N (each slot receives
-        # contributions from all points proportionally)
-        A = A / (A.sum(dim=2, keepdim=True) + 1e-6)          # [B, S, N]
+            # Row-wise softmax: normalise over S (memory slots)
+            A = F.softmax(A, dim=1)                                   # [B, S, N]
 
-        # Step 2: aggregate via Mᵥ
-        F_global = self.mv(A)                                 # [B, C, N]
+            # Column-wise L1 normalisation: each slot contributes proportionally
+            A = A / (A.sum(dim=2, keepdim=True) + 1e-6)               # [B, S, N]
 
-        return self.out_mlp(F_global) + x                     # residual connection
+            # Step 2: aggregate via Mᵥ
+            F_global = self.mv(A)                                     # [B, C, N]
+
+        F_global = F_global.to(x.dtype)
+        return self.out_mlp(F_global) + x                             # residual connection
 
 
 # ──────────────────────────────────────────────────────────────────────────────
