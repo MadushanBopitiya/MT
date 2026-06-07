@@ -107,7 +107,7 @@ def get_model(model_name, num_classes, num_points, device):
         k = 32 if num_points >= 4096 else 16
         return PVT(num_classes=num_classes, num_points=num_points, k=k, S=64).to(device)
     elif model_name == "PointTransformer":
-        return PointTransformer(num_classes=num_classes, num_points=num_points, k=32).to(device)
+        return PointTransformer(num_classes=num_classes, num_points=num_points).to(device)
     else:
         raise ValueError(f"❌ Unknown Model: {model_name}")
 
