@@ -12,6 +12,7 @@
 # COMMENT — everything else stays the same across all 20 experiments.
 # ============================================================================
 
+#SBATCH --job-name=pn2_mfcad_linprobe_bestloss
 #SBATCH --partition=lrz-dgx-a100-80x8
 #SBATCH --gres=gpu:1
 #SBATCH --time=04:00:00
@@ -35,7 +36,7 @@ FREEZE="--freeze_encoder"
 # Short tag for this experiment, used in output folder names.
 # Convention: {source}_{strategy}
 #   e.g.  mfcad_linprobe  /  mfcad_ft  /  fusion360_linprobe  /  fusion360_ft
-COMMENT="mfcad_linprobe"
+COMMENT="PointNet2_MFCAD++_bestacc_linprobe_bestloss"
 
 # Optional class weighting (default off).  Set to "--class_weights" to enable.
 CLASS_W=""
@@ -51,12 +52,12 @@ SPLIT_DIR="$DATA_ROOT/splits"
 INVENTORY="$DATA_ROOT/_class_inventory_ToolType.json"
 
 EPOCHS=100
-PATIENCE=20
+PATIENCE=25
 BATCH_SIZE=8
 LR_BACKBONE=1e-4
 LR_HEAD=1e-3
 
-OUT_ROOT="checkpoints_phase2"
+OUT_ROOT="checkpoints_phase2/Machining_Tools"
 
 # ============================================================================
 # === ENVIRONMENT SETUP ======================================================
@@ -123,9 +124,11 @@ for f in 0 1 2 3 4; do
 
     echo
     echo "----------------------------------------------------------------------"
-    echo " FOLD $f  -  TESTING"
+    echo " FOLD $f  -  TESTING (both checkpoints)"
     echo "----------------------------------------------------------------------"
     EXP_DIR="${OUT_ROOT}/${MODEL}_from_${SRC_TAG}_${MODE}_fold${f}_${COMMENT}"
+
+    # Test best-by-mIoU checkpoint
     python test_phase2.py \
         --checkpoint "${EXP_DIR}/best_model_miou.pth" \
         --data_root "$DATA_ROOT" \
@@ -134,20 +137,46 @@ for f in 0 1 2 3 4; do
         --classes "$CLASSES" \
         --num_points "$NUM_POINTS" \
         --batch_size "$BATCH_SIZE" \
-        || echo "WARNING: test failed on fold $f - continuing"
+        --out "${EXP_DIR}/test_results_bymiou.json" \
+        || echo "WARNING: by-mIoU test failed on fold $f - continuing"
+
+    # Test best-by-loss checkpoint
+    python test_phase2.py \
+        --checkpoint "${EXP_DIR}/best_model_loss.pth" \
+        --data_root "$DATA_ROOT" \
+        --test_file "${SPLIT_DIR}/fold${f}_test.txt" \
+        --model "$MODEL" \
+        --classes "$CLASSES" \
+        --num_points "$NUM_POINTS" \
+        --batch_size "$BATCH_SIZE" \
+        --out "${EXP_DIR}/test_results_byloss.json" \
+        || echo "WARNING: by-loss test failed on fold $f - continuing"
 done
 
 # ============================================================================
-# === AGGREGATE ==============================================================
+# === AGGREGATE (both criteria) ==============================================
 
 echo
 echo "----------------------------------------------------------------------"
-echo " AGGREGATING ALL 5 FOLDS"
+echo " AGGREGATING ALL 5 FOLDS  -  by mIoU-best checkpoint"
 echo "----------------------------------------------------------------------"
 python aggregate_folds.py \
     --pattern "${OUT_ROOT}/${MODEL}_from_${SRC_TAG}_${MODE}_fold*_${COMMENT}" \
     --classes "$CLASSES" \
-    --data_root "$DATA_ROOT"
+    --data_root "$DATA_ROOT" \
+    --results_filename "test_results_bymiou.json" \
+    --out "${OUT_ROOT}/cv_summary_${MODEL}_${SRC_TAG}_${MODE}_${COMMENT}_bymiou.json"
+
+echo
+echo "----------------------------------------------------------------------"
+echo " AGGREGATING ALL 5 FOLDS  -  by loss-best checkpoint"
+echo "----------------------------------------------------------------------"
+python aggregate_folds.py \
+    --pattern "${OUT_ROOT}/${MODEL}_from_${SRC_TAG}_${MODE}_fold*_${COMMENT}" \
+    --classes "$CLASSES" \
+    --data_root "$DATA_ROOT" \
+    --results_filename "test_results_byloss.json" \
+    --out "${OUT_ROOT}/cv_summary_${MODEL}_${SRC_TAG}_${MODE}_${COMMENT}_byloss.json"
 
 echo
 echo "Job finished at $(date)"

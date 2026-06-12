@@ -48,6 +48,10 @@ def main():
     ap.add_argument("--classes", type=int, default=17)
     ap.add_argument("--data_root", default=None,
                     help="For looking up class names.")
+    ap.add_argument("--results_filename", default="test_results.json",
+                    help="Which JSON to read from each fold directory "
+                         "(use test_results_bymiou.json or test_results_byloss.json "
+                         "to aggregate by different checkpoint-selection criteria).")
     ap.add_argument("--out", default=None,
                     help="Where to write aggregated JSON.  Default: cv_summary.json next to the first match.")
     args = ap.parse_args()
@@ -68,9 +72,9 @@ def main():
     per_class_per_fold = [[] for _ in range(args.classes)]
 
     for d in dirs:
-        results_path = os.path.join(d, "test_results.json")
+        results_path = os.path.join(d, args.results_filename)
         if not os.path.isfile(results_path):
-            print(f"  WARNING: no test_results.json in {d} — skipping.")
+            print(f"  WARNING: no {args.results_filename} in {d} — skipping.")
             continue
         with open(results_path, encoding="utf-8") as f:
             r = json.load(f)

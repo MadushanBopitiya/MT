@@ -408,7 +408,8 @@ def main():
     history = {"train_loss": [], "test_loss": [],
                "train_acc": [], "test_acc": [], "test_miou": []}
     best_test_miou = -1.0
-    epochs_no_improve = 0
+    best_test_loss = float("inf")
+    epochs_no_improve = 0  # counts epochs since LOSS last improved (drives early stopping)
 
     for epoch in range(args.epochs):
         # Reset shuffling seed per epoch for reproducibility
@@ -464,26 +465,44 @@ def main():
             f"teMIoU={test['miou_present']*100:.2f}%"
         )
 
-        # Save best by test mIoU
+        # Track both metrics. Early stopping is driven by TEST LOSS (matches
+        # Phase 1's train_universal.py convention).  We also save the best-
+        # mIoU checkpoint independently for reporting, since mIoU is the
+        # headline metric and best-loss != best-mIoU in general (the long
+        # tail makes the two diverge).
+
+        # Best-by-loss checkpoint (drives early stopping)
+        if test["loss"] < best_test_loss:
+            best_test_loss = test["loss"]
+            epochs_no_improve = 0
+            torch.save({
+                "epoch": epoch + 1,
+                "model_state_dict": model.state_dict(),
+                "loss": best_test_loss,
+                "miou": test["miou_present"],
+                "per_class_iou": test["per_class_iou"],
+                "args": vars(args),
+            }, save_dir / "best_model_loss.pth")
+        else:
+            epochs_no_improve += 1
+
+        # Best-by-mIoU checkpoint (independent; informational)
         if test["miou_present"] > best_test_miou:
             best_test_miou = test["miou_present"]
-            epochs_no_improve = 0
-            best_path = save_dir / "best_model_miou.pth"
             torch.save({
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "miou": best_test_miou,
+                "loss": test["loss"],
                 "per_class_iou": test["per_class_iou"],
                 "args": vars(args),
-            }, best_path)
-        else:
-            epochs_no_improve += 1
+            }, save_dir / "best_model_miou.pth")
 
         # Always keep the last
         torch.save(model.state_dict(), save_dir / "last_model.pth")
 
         if epochs_no_improve >= args.patience:
-            logger.log(f"Early stopping at epoch {epoch+1} (no test-mIoU improvement for {args.patience}).")
+            logger.log(f"Early stopping at epoch {epoch+1} (test loss did not improve for {args.patience} epochs).")
             break
 
     # --- Save history + plot ---
@@ -512,11 +531,13 @@ def main():
         "freeze_encoder": args.freeze_encoder,
         "class_weights": args.class_weights,
         "best_test_miou": best_test_miou,
+        "best_test_loss": best_test_loss,
         "epochs_trained": len(history["train_loss"]),
     }
     with open(save_dir / "fold_summary.json", "w", encoding="utf-8") as f:
         json.dump(final, f, indent=2)
-    logger.log(f"DONE. Best test mIoU = {best_test_miou*100:.2f}%")
+    logger.log(f"DONE. Best test mIoU = {best_test_miou*100:.2f}%  |  "
+               f"Best test loss = {best_test_loss:.4f}")
 
 
 if __name__ == "__main__":
