@@ -167,7 +167,8 @@ def main():
     matrix_file = os.path.join(results_dir, "confusion_matrix.png")
 
     # A. Confusion Matrix
-    cm = confusion_matrix(full_targets, full_preds)
+    # Flatten to 1D for sklearn (sklearn expects [n_samples], we have [n_clouds, n_points])
+    cm = confusion_matrix(full_targets.flatten(), full_preds.flatten())
     plt.figure(figsize=(20, 18))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=range(args.classes),
@@ -201,7 +202,7 @@ def main():
 
         f.write("\n" + "-" * 50 + "\n")
         f.write("SCIKIT-LEARN REPORT (Precision/Recall/F1):\n")
-        f.write(classification_report(full_targets, full_preds, digits=4))
+        f.write(classification_report(full_targets.flatten(), full_preds.flatten(), digits=4))
 
     print(f"✅ Report saved to: {report_file}")
     print(f"✅ Matrix saved to: {matrix_file}")
