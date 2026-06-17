@@ -12,7 +12,7 @@
 # COMMENT — everything else stays the same across all 20 experiments.
 # ============================================================================
 
-#SBATCH --job-name=pn2_mfcad_linprobe_bestloss
+#SBATCH --job-name=pn2_mfcad_linprobe
 #SBATCH --partition=lrz-dgx-a100-80x8
 #SBATCH --gres=gpu:1
 #SBATCH --time=04:00:00
@@ -33,13 +33,25 @@ PRETRAINED="checkpoints/PointNet2_MFCAD++_lr0.001_bs16_ep150_Adam_nsample=64/bes
 # Linear probe = "--freeze_encoder", full fine-tune = "" (empty)
 FREEZE="--freeze_encoder"
 
-# Short tag for this experiment, used in output folder names.
-# Convention: {source}_{strategy}
-#   e.g.  mfcad_linprobe  /  mfcad_ft  /  fusion360_linprobe  /  fusion360_ft
-COMMENT="PointNet2_MFCAD++_bestacc_linprobe_bestloss"
+# Experiment name — used as the subfolder under OUT_ROOT.  Keep it short
+# and informative.  Output structure is:
+#     <OUT_ROOT>/<COMMENT>/fold{0..4}/...
+#     <OUT_ROOT>/<COMMENT>/cv_summary_bymiou.json
+#     <OUT_ROOT>/<COMMENT>/cv_summary_byloss.json
+# Suggested format: {arch}_{source}_{strategy}[_{variant}]
+#   e.g.  pn2_mfcad_lp  /  pn2_mfcad_ft  /  pn2_mfcad_ft_drop10  /  pn2_mfcad_ft_drop10_cw
+COMMENT="pn2_mfcad_lp"
 
 # Optional class weighting (default off).  Set to "--class_weights" to enable.
 CLASS_W=""
+
+# Optional class dropping.  Whitespace-separated class IDs to mask to -1.
+# Leave empty to keep all 17 classes.
+# Common choices for ToolType:
+#   "<10 parts (recommended): 1 3 5 6 8 10 11 13 14 15 16"  -> keeps 6 classes
+#   "<5 parts:                1 5 6 8 10 11 13 15"          -> keeps 9 classes
+#   "<20 parts:               1 2 3 5 6 8 10 11 13 14 15 16" -> keeps 5 classes
+IGNORE_CLASSES=""
 
 # ============================================================================
 # === FIXED VARIABLES (rarely change) ========================================
@@ -52,7 +64,7 @@ SPLIT_DIR="$DATA_ROOT/splits"
 INVENTORY="$DATA_ROOT/_class_inventory_ToolType.json"
 
 EPOCHS=100
-PATIENCE=25
+PATIENCE=20
 BATCH_SIZE=8
 LR_BACKBONE=1e-4
 LR_HEAD=1e-3
@@ -95,6 +107,13 @@ if [[ -n "$FREEZE" ]]; then
     MODE="frozen"
 fi
 
+# Build --ignore_class_ids argument only if IGNORE_CLASSES is non-empty
+IGNORE_ARG=""
+if [[ -n "$IGNORE_CLASSES" ]]; then
+    IGNORE_ARG="--ignore_class_ids $IGNORE_CLASSES"
+    echo "Class IDs to drop (mask to -1): $IGNORE_CLASSES"
+fi
+
 # ============================================================================
 # === 5-FOLD LOOP ============================================================
 
@@ -114,6 +133,7 @@ for f in 0 1 2 3 4; do
         --pretrained_path "$PRETRAINED" \
         $FREEZE \
         $CLASS_W \
+        $IGNORE_ARG \
         --epochs "$EPOCHS" \
         --patience "$PATIENCE" \
         --batch_size "$BATCH_SIZE" \
@@ -126,7 +146,7 @@ for f in 0 1 2 3 4; do
     echo "----------------------------------------------------------------------"
     echo " FOLD $f  -  TESTING (both checkpoints)"
     echo "----------------------------------------------------------------------"
-    EXP_DIR="${OUT_ROOT}/${MODEL}_from_${SRC_TAG}_${MODE}_fold${f}_${COMMENT}"
+    EXP_DIR="${OUT_ROOT}/${COMMENT}/fold${f}"
 
     # Test best-by-mIoU checkpoint
     python test_phase2.py \
@@ -137,6 +157,7 @@ for f in 0 1 2 3 4; do
         --classes "$CLASSES" \
         --num_points "$NUM_POINTS" \
         --batch_size "$BATCH_SIZE" \
+        $IGNORE_ARG \
         --out "${EXP_DIR}/test_results_bymiou.json" \
         || echo "WARNING: by-mIoU test failed on fold $f - continuing"
 
@@ -149,6 +170,7 @@ for f in 0 1 2 3 4; do
         --classes "$CLASSES" \
         --num_points "$NUM_POINTS" \
         --batch_size "$BATCH_SIZE" \
+        $IGNORE_ARG \
         --out "${EXP_DIR}/test_results_byloss.json" \
         || echo "WARNING: by-loss test failed on fold $f - continuing"
 done
@@ -161,22 +183,22 @@ echo "----------------------------------------------------------------------"
 echo " AGGREGATING ALL 5 FOLDS  -  by mIoU-best checkpoint"
 echo "----------------------------------------------------------------------"
 python aggregate_folds.py \
-    --pattern "${OUT_ROOT}/${MODEL}_from_${SRC_TAG}_${MODE}_fold*_${COMMENT}" \
+    --pattern "${OUT_ROOT}/${COMMENT}/fold*" \
     --classes "$CLASSES" \
     --data_root "$DATA_ROOT" \
     --results_filename "test_results_bymiou.json" \
-    --out "${OUT_ROOT}/cv_summary_${MODEL}_${SRC_TAG}_${MODE}_${COMMENT}_bymiou.json"
+    --out "${OUT_ROOT}/${COMMENT}/cv_summary_bymiou.json"
 
 echo
 echo "----------------------------------------------------------------------"
 echo " AGGREGATING ALL 5 FOLDS  -  by loss-best checkpoint"
 echo "----------------------------------------------------------------------"
 python aggregate_folds.py \
-    --pattern "${OUT_ROOT}/${MODEL}_from_${SRC_TAG}_${MODE}_fold*_${COMMENT}" \
+    --pattern "${OUT_ROOT}/${COMMENT}/fold*" \
     --classes "$CLASSES" \
     --data_root "$DATA_ROOT" \
     --results_filename "test_results_byloss.json" \
-    --out "${OUT_ROOT}/cv_summary_${MODEL}_${SRC_TAG}_${MODE}_${COMMENT}_byloss.json"
+    --out "${OUT_ROOT}/${COMMENT}/cv_summary_byloss.json"
 
 echo
 echo "Job finished at $(date)"

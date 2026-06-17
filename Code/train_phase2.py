@@ -279,6 +279,11 @@ def get_args():
     ap.add_argument("--inventory",  type=str, default=None,
                     help="Optional path to _class_inventory_ToolType.json "
                          "(used only with --class_weights).")
+    ap.add_argument("--ignore_class_ids", type=int, nargs="*", default=None,
+                    help="Class IDs to drop (mask to -1) at load time.  "
+                         "Use this to exclude rare classes without re-processing "
+                         "the data.  E.g.  --ignore_class_ids 1 3 5 6 8 10 11 13 14 15 16  "
+                         "drops the 11 classes with fewer than 10 parts.")
     # Model
     ap.add_argument("--model",   type=str, required=True,
                     choices=["PointNet2", "DGCNN", "KPConv", "PVT", "PointTransformer"])
@@ -316,16 +321,12 @@ def main():
     args = get_args()
     set_seed(args.seed)
 
-    # Output dir
-    src_tag = "scratch"
-    if args.pretrained_path:
-        src_tag = Path(args.pretrained_path).stem
-    mode = "frozen" if args.freeze_encoder else "ft"
-    exp_name = f"{args.model}_from_{src_tag}_{mode}_fold{args.fold}_{args.comment}"
-    save_dir = Path(args.out_root) / exp_name
+    # Output dir: {out_root}/{comment}/fold{f}
+    # The "comment" is now the experiment short name.
+    save_dir = Path(args.out_root) / args.comment / f"fold{args.fold}"
     save_dir.mkdir(parents=True, exist_ok=True)
     logger = Logger(str(save_dir / "training_log.txt"))
-    logger.log(f"--- {exp_name} ---")
+    logger.log(f"--- {args.comment} / fold{args.fold} ---")
     logger.log(f"Started: {datetime.datetime.now().isoformat(timespec='seconds')}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -334,8 +335,12 @@ def main():
     # --- Data ---
     train_split = Path(args.split_dir) / f"fold{args.fold}_train.txt"
     test_split  = Path(args.split_dir) / f"fold{args.fold}_test.txt"
-    train_ds = ThesisDatasetPhase2(args.data_root, str(train_split), augment=True)
-    test_ds  = ThesisDatasetPhase2(args.data_root, str(test_split),  augment=False)
+    if args.ignore_class_ids:
+        logger.log(f"Ignoring class IDs (masked to -1): {sorted(set(args.ignore_class_ids))}")
+    train_ds = ThesisDatasetPhase2(args.data_root, str(train_split), augment=True,
+                                    ignore_class_ids=args.ignore_class_ids)
+    test_ds  = ThesisDatasetPhase2(args.data_root, str(test_split),  augment=False,
+                                    ignore_class_ids=args.ignore_class_ids)
 
     g = torch.Generator(); g.manual_seed(args.seed)
     train_loader = DataLoader(
