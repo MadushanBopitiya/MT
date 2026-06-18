@@ -183,11 +183,18 @@ def split_params_for_optimizer(model, encoder_param_names, freeze_encoder):
 # ---------------------------------------------------------------------------
 # Class weights
 # ---------------------------------------------------------------------------
-def compute_class_weights(inventory_path, num_classes, device):
+def compute_class_weights(inventory_path, num_classes, device, ignore_ids=None):
     """
     Inverse-frequency weights from per-class point counts in the inventory.
     Returned tensor has mean 1 across classes (so the loss magnitude stays
     comparable to the unweighted case).
+
+    If ignore_ids is given, those classes are treated as having zero
+    points before normalisation -- the inventory's stored count for
+    them is overridden.  This matters when --ignore_class_ids is used
+    at training time: the masked points contribute nothing to the loss,
+    so they must contribute nothing to the weight normalisation either,
+    or the kept classes' weights get crushed.
     """
     with open(inventory_path, encoding="utf-8") as f:
         inv = json.load(f)
@@ -204,6 +211,13 @@ def compute_class_weights(inventory_path, num_classes, device):
         cid = int(e["id"])
         if 0 <= cid < num_classes:
             counts[cid] = max(int(e.get("point_count", e.get("points", 0))), 0)
+    # Honour --ignore_class_ids: zero those counts so they don't skew the
+    # normalisation.  Without this, a rare-but-ignored class soaks up the
+    # weight budget and crushes the kept classes' effective weights.
+    if ignore_ids:
+        for cid in ignore_ids:
+            if 0 <= cid < num_classes:
+                counts[cid] = 0
     total = counts.sum()
     if total == 0:
         return None
@@ -397,7 +411,8 @@ def main():
         if not args.inventory:
             logger.log("ERROR: --class_weights set but no --inventory path.")
             sys.exit(1)
-        weights = compute_class_weights(args.inventory, args.classes, device)
+        weights = compute_class_weights(args.inventory, args.classes, device,
+                                        ignore_ids=args.ignore_class_ids)
         logger.log(f"Class weights (mean=1): {weights.cpu().numpy().round(3).tolist()}")
     # NOTE: Phase 1 models end with LogSoftmax, so Phase 1 used NLLLoss.
     # We keep that convention for compatibility.
