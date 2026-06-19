@@ -210,7 +210,15 @@ def compute_class_weights(inventory_path, num_classes, device, ignore_ids=None):
     for e in entries:
         cid = int(e["id"])
         if 0 <= cid < num_classes:
-            counts[cid] = max(int(e.get("point_count", e.get("points", 0))), 0)
+            # Tolerate any of the historical key names: prepare_*_data.py writes
+            # "n_points", make_subset_drop_rare.py rewrites with "point_count",
+            # and some older snapshots used "points".  Check all three.
+            n = e.get("point_count")
+            if n is None:
+                n = e.get("n_points")
+            if n is None:
+                n = e.get("points", 0)
+            counts[cid] = max(int(n), 0)
     # Honour --ignore_class_ids: zero those counts so they don't skew the
     # normalisation.  Without this, a rare-but-ignored class soaks up the
     # weight budget and crushes the kept classes' effective weights.
