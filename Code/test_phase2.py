@@ -131,6 +131,10 @@ def main():
     ap.add_argument("--num_points", type=int, default=4096)
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--ignore_class_ids", type=int, nargs="*", default=None,
+                    help="Class IDs to mask to -1 in the test set.  Should match "
+                         "the --ignore_class_ids used during training so that "
+                         "ignored classes' points contribute nothing to the IoU.")
     ap.add_argument("--out", type=str, default=None,
                     help="Where to write results.json.  Default: alongside the checkpoint.")
     args = ap.parse_args()
@@ -155,7 +159,8 @@ def main():
     model.load_state_dict(state, strict=True)
 
     # Data
-    test_ds = ThesisDatasetPhase2(args.data_root, args.test_file, augment=False)
+    test_ds = ThesisDatasetPhase2(args.data_root, args.test_file, augment=False,
+                                   ignore_class_ids=args.ignore_class_ids)
     test_loader = DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True,
