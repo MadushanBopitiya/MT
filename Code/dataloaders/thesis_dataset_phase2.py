@@ -28,7 +28,8 @@ from torch.utils.data import Dataset
 
 
 class ThesisDatasetPhase2(Dataset):
-    def __init__(self, data_root, split_file, augment=True, use_npy=True):
+    def __init__(self, data_root, split_file, augment=True, use_npy=True,
+                 ignore_class_ids=None):
         """
         Args:
             data_root:   Path containing xyz/, seg/ subfolders
@@ -43,8 +44,23 @@ class ThesisDatasetPhase2(Dataset):
             use_npy:     If True, prefer xyz_npy/*.npy and seg_npy/*.npy
                          when present (Phase 1's convert_to_npy.py
                          convention).  Falls back to .xyz/.seg text.
+            ignore_class_ids:
+                         Optional iterable of class IDs to mask to -1
+                         at load time.  Lets you drop classes without
+                         creating a separate dataset directory.  None
+                         or empty means no masking (behavior identical
+                         to before this kwarg existed).
         """
         self.augment = augment
+
+        # Normalize ignore_class_ids to a numpy array of unique sorted
+        # ints, or None if nothing to mask.  Done once here so __getitem__
+        # can use np.isin without per-call coercion.
+        self.ignore_class_ids = (
+            np.asarray(sorted(set(int(c) for c in ignore_class_ids)),
+                       dtype=np.int64)
+            if ignore_class_ids else None
+        )
 
         self.data_root      = data_root
         self.xyz_folder     = os.path.join(data_root, "xyz")
@@ -100,6 +116,9 @@ class ThesisDatasetPhase2(Dataset):
         if missing:
             print(f"     WARNING: {n_drop} stems from split file had no matching "
                   f"files and were skipped: {missing[:3]}{'...' if n_drop > 3 else ''}")
+        if self.ignore_class_ids is not None:
+            print(f"     ignore_class_ids = {self.ignore_class_ids.tolist()}  "
+                  f"(these labels are masked to -1 at load time)")
 
     def __len__(self):
         return len(self.file_list)
@@ -120,6 +139,16 @@ class ThesisDatasetPhase2(Dataset):
         except Exception as e:
             print(f"   Corrupt file: {sample['xyz']} ({e})")
             return self.__getitem__((idx + 1) % len(self.file_list))
+
+        # Apply class-ID masking if requested.  Points whose label is in
+        # ignore_class_ids become -1, which the trainer's NLLLoss
+        # (ignore_index=-1) excludes from the loss and the evaluator
+        # excludes from the confusion matrix.
+        if self.ignore_class_ids is not None:
+            mask = np.isin(labels, self.ignore_class_ids)
+            if mask.any():
+                labels = labels.copy()
+                labels[mask] = -1
 
         # 2. Separate
         points  = data[:, 0:3].astype(np.float32)
