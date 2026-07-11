@@ -21,7 +21,8 @@ A central finding of the thesis is the **transfer paradox**: pre-training on the
 
 ```
 ├── dataloaders/
-│   ├── thesis_dataset.py                    # Unified dataset loader for Phase 1 and Phase 2
+│   ├── thesis_dataset.py                    # dataset loader for Phase 1
+│   ├── thesis_dataset_phase2.py             # dataset loader for Phase 2
 │   └── thesis_dataset_multitask.py          # Multi-task dataset (ToolType + ModuleType)
 ├── models/
 │   ├── pointnet2.py                         # PointNet++ (part segmentation variant)
@@ -36,7 +37,7 @@ A central finding of the thesis is the **transfer paradox**: pre-training on the
 ├── train_phase2.py                          # Phase 2 fine-tuning (5-fold CV)
 ├── train_multitask.py                       # Multi-task Phase 2 training
 ├── test_universal.py                        # Phase 1 evaluation
-├── test_phase2.py                           # Phase 2 evaluation (single fold)
+├── test_phase2.py                           # Phase 2 evaluation
 ├── test_multitask.py                        # Multi-task evaluation
 ├── aggregate_folds.py                       # Aggregates 5-fold CV results
 ├── run_phase2.sh                            # SLURM submission for Phase 2
