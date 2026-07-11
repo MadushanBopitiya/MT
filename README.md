@@ -181,12 +181,6 @@ python train_phase2.py \
     --out_root outputs/phase2/PT_from_MFCAD++_ToolType
 ```
 
-Repeat for `--fold 1` through `--fold 4`, then aggregate:
-
-```bash
-python aggregate_folds.py --run_dir outputs/phase2/PT_from_MFCAD++_ToolType
-```
-
 ## Trained Model Checkpoints
 
 Model checkpoints are not included in this repository due to file size constraints. To reproduce the reported results without retraining:
