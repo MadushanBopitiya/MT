@@ -2,7 +2,7 @@
 
 Master's thesis code repository — Madushan Bopitiya, Technical University of Munich (TUM)
 
-This repository contains the source code, training pipelines, and experimental scripts for a Master's thesis benchmarking three state-of-the-art point cloud segmentation architectures (PointNet++, DGCNN, Point Transformer) on the task of machining feature recognition from CAD-derived point clouds.
+This repository contains the source code, training pipelines and experimental scripts for a Master's thesis benchmarking three state-of-the-art point cloud segmentation architectures (PointNet++, DGCNN, Point Transformer) on the task of machining feature recognition from CAD-derived point clouds.
 
 ---
 
@@ -10,7 +10,7 @@ This repository contains the source code, training pipelines, and experimental s
 
 The thesis presents a systematic two-phase study:
 
-- **Phase 1**: benchmarks the three architectures under a unified protocol on two large CAD segmentation datasets — MFCAD++ (25 classes, 59,655 samples) and Fusion 360 Gallery (8 classes, 35,858 samples).
+- **Phase 1**: benchmarks the three architectures under a unified protocol on two large CAD segmentation datasets — MFCAD++ (25 classes, 59,665 samples) and Fusion 360 Gallery (8 classes, 35,680 samples).
 - **Phase 2**: transfers the six pre-trained models to a small industrial machining tools dataset (73 parts for ToolType with 17 classes, 75 parts for ModuleType with 6 classes) under 5-fold cross-validation.
 
 A central finding of the thesis is the **transfer paradox**: pre-training on the Fusion 360 Gallery dataset, which yields lower absolute performance in Phase 1 than MFCAD++, produces consistently equal or better results when transferred to the industrial task. This suggests that semantic alignment between source and target annotation schemes matters more than raw benchmark performance when selecting a pre-trained model.
