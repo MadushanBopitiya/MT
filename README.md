@@ -155,7 +155,7 @@ python train_universal.py \
     --comment baseline
 ```
 
-Available `--model` values: `PointNet2`, `DGCNN`, `PointTransformer`, `KPConv`, `PVT`
+Available `--model` values: `PointNet2`, `DGCNN`, `PointTransformer`
 Available `--dataset` values: `MFCAD++`, `Fusion360`
 
 ### Phase 1: Evaluation
