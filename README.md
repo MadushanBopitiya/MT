@@ -19,7 +19,6 @@ A central finding of the thesis is the **transfer paradox**: pre-training on the
 
 ## Repository Structure
 
-```
 ├── dataloaders/
 │   ├── thesis_dataset.py                    # dataset loader for Phase 1
 │   ├── thesis_dataset_phase2.py             # dataset loader for Phase 2
