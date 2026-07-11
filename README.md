@@ -19,6 +19,7 @@ A central finding of the thesis is the **transfer paradox**: pre-training on the
 
 ## Repository Structure
 
+```
 ├── dataloaders/
 │   ├── thesis_dataset.py                    # dataset loader for Phase 1
 │   ├── thesis_dataset_phase2.py             # dataset loader for Phase 2
@@ -41,6 +42,8 @@ A central finding of the thesis is the **transfer paradox**: pre-training on the
 ├── aggregate_folds.py                       # Aggregates 5-fold CV results
 ├── run_phase2.sh                            # SLURM submission for Phase 2
 └── slurm_multitask.sh                       # SLURM submission for multi-task
+```
+
 ---
 
 ## Key Implementation Details
@@ -61,6 +64,8 @@ All architectures accept:
 - **Point count**: 4096 points per sample
 - **Feature dimensionality**: 6 channels (XYZ coordinates + surface normals)
 - **Normal computation**: exact, inherited from B-Rep faces during CAD-to-point-cloud sampling
+
+---
 
 ## Environment Setup
 
@@ -157,7 +162,7 @@ Available `--dataset` values: `MFCAD++`, `Fusion360`
 ### Phase 1: Evaluation
 
 ```bash
-python test_phase1.py \
+python test_universal.py \
     --dataset MFCAD++ \
     --model PointNet2 \
     --checkpoint path/to/best_model_loss.pth
@@ -176,6 +181,8 @@ python train_phase2.py \
     --out_root outputs/phase2/PT_from_MFCAD++_ToolType
 ```
 
+---
+
 ## Trained Model Checkpoints
 
 Model checkpoints are not included in this repository due to file size constraints. To reproduce the reported results without retraining:
@@ -183,7 +190,7 @@ Model checkpoints are not included in this repository due to file size constrain
 1. **Retrain**: run the training commands above to reproduce checkpoints from scratch.
 2. **Request archive**: trained checkpoints and full training logs can be requested by contacting the author.
 
-Alternatively, all reported results in the thesis are reproducible from the source code by following the SLURM submission scripts in `scripts/`.
+All reported results in the thesis are reproducible from the source code and the SLURM submission scripts (`run_phase2.sh`, `slurm_multitask.sh`) provided in this repository.
 
 ---
 
@@ -195,7 +202,7 @@ Experiments were conducted on the **TUM Leibniz Supercomputing Centre (LRZ)** us
 
 ## Reproducibility
 
-All experiments use fixed random seeds (seed=42 for Phase 1, seed=0 for Phase 2) for Python's `random` module, NumPy, PyTorch CPU, and PyTorch CUDA. `torch.backends.cudnn.deterministic` is set to `True` and `benchmark` to `False` to ensure reproducibility across runs.
+All experiments use fixed random seeds (seed=42 for Phase 1, seed=0 for Phase 2) for Python's `random` module, NumPy, PyTorch CPU and PyTorch CUDA. `torch.backends.cudnn.deterministic` is set to `True` and `benchmark` to `False` to ensure reproducibility across runs.
 
 Validation splits are deterministic and saved to `validation_split.txt` in each experiment folder.
 
@@ -205,7 +212,7 @@ Validation splits are deterministic and saved to `validation_split.txt` in each 
 
 For questions about this repository or the thesis, please contact:
 
-- **Author**: Madushan Bopitiya
+- **Author**: Madushan Bopitiya @ bopitiyamadushan@gmail.com
 - **Supervisor**: Stavros Nousias, Chair of Computing in Civil and Building Engineering, TUM
 
 ---
@@ -218,5 +225,3 @@ The implementations in this repository build upon the reference codebases releas
 - Qi et al. (PointNet++, [charlesq34/pointnet2](https://github.com/charlesq34/pointnet2))
 - Wang et al. (DGCNN, [WangYueFt/dgcnn](https://github.com/WangYueFt/dgcnn))
 - Zhao et al. and Pointcept contributors (Point Transformer, [Pointcept/Pointcept](https://github.com/Pointcept/Pointcept))
-
----
