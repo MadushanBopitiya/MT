@@ -173,7 +173,6 @@ python test_phase1.py \
 python train_phase2.py \
     --data_root path/to/Machining_Tools \
     --split_dir path/to/splits \
-    --fold 0 \
     --pretrained_path checkpoints/phase1/PointTransformer_MFCAD++_best.pth \
     --num_classes 17 \
     --inventory path/to/tool_inventory.json \
