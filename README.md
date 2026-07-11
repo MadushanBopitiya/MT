@@ -21,30 +21,26 @@ A central finding of the thesis is the **transfer paradox**: pre-training on the
 
 ```
 ├── dataloaders/
-│   ├── thesis_dataset.py                    # Unified dataset loader for Phase 1 & 2
+│   ├── thesis_dataset.py                    # Unified dataset loader for Phase 1 and Phase 2
 │   └── thesis_dataset_multitask.py          # Multi-task dataset (ToolType + ModuleType)
 ├── models/
 │   ├── pointnet2.py                         # PointNet++ (part segmentation variant)
 │   ├── dgcnn.py                             # DGCNN (part segmentation variant)
-│   ├── pt.py                                # Point Transformer (PartSeg26)
+│   ├── pt.py                                # Point Transformer (PartSeg26 rewrite)
 │   ├── pt_multitask.py                      # Multi-task Point Transformer
 │   ├── kpconv.py                            # KPConv (auxiliary, not in main results)
 │   └── pvt.py                               # PVT (auxiliary, not in main results)
-├── train_universal.py                       # Phase 1 training script (unweighted)
-├── train_universal_cw.py                    # Phase 1 with class weights (ablation)
-├── train_phase2.py                          # Phase 2 fine-tuning under 5-fold CV
+├── src/
+│   └── preprocessing/                       # CAD-to-point-cloud conversion scripts
+├── train_universal.py                       # Phase 1 training
+├── train_phase2.py                          # Phase 2 fine-tuning (5-fold CV)
 ├── train_multitask.py                       # Multi-task Phase 2 training
-├── test_phase1.py                           # Phase 1 evaluation
-├── test_phase2.py                           # Phase 2 evaluation
+├── test_universal.py                        # Phase 1 evaluation
+├── test_phase2.py                           # Phase 2 evaluation (single fold)
 ├── test_multitask.py                        # Multi-task evaluation
-├── aggregate_folds.py                       # Aggregates 5-fold results
-├── scripts/                                 # SLURM submission scripts
-│   ├── phase1/                              # Phase 1 job submissions
-│   ├── phase2/                              # Phase 2 job submissions
-│   └── multitask/                           # Multi-task job submissions
-└── requirements.txt                         # Python dependencies
-```
-
+├── aggregate_folds.py                       # Aggregates 5-fold CV results
+├── run_phase2.sh                            # SLURM submission for Phase 2
+└── slurm_multitask.sh                       # SLURM submission for multi-task
 ---
 
 ## Key Implementation Details
