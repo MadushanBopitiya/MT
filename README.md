@@ -63,7 +63,6 @@ Documented deviations from the reference implementations (e.g., T-Net omission i
 All architectures accept:
 - **Point count**: 4096 points per sample
 - **Feature dimensionality**: 6 channels (XYZ coordinates + surface normals)
-- **Normal computation**: exact, inherited from B-Rep faces during CAD-to-point-cloud sampling
 
 ---
 
@@ -73,27 +72,7 @@ All architectures accept:
 
 - Python 3.10+
 - PyTorch 2.7+ with CUDA support
-- NVIDIA GPU (experiments were run on NVIDIA A100 80GB)
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/MadushanBopitiya/MT.git
-cd MT
-
-# Create a conda environment (recommended)
-conda create -n thesis_env python=3.10
-conda activate thesis_env
-
-# Install PyTorch (adjust CUDA version as needed)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-
-# Install other dependencies
-pip install -r requirements.txt
-```
-
-The `requirements.txt` includes: numpy, matplotlib, tqdm, plyfile, einops.
+- NVIDIA GPU
 
 **Note**: The Point Transformer implementation is a pure-PyTorch rewrite of the Pointcept `PartSeg26` architecture. It does NOT require the CUDA-only `pointops` kernel from the reference implementation.
 
@@ -194,7 +173,7 @@ All reported results in the thesis are reproducible from the source code and the
 
 ---
 
-## Compute Requirements
+## Hardware Used
 
 Experiments were conducted on the **TUM Leibniz Supercomputing Centre (LRZ)** using the `lrz-dgx-a100-80x8` partition (NVIDIA A100 80GB GPUs).
 
@@ -204,7 +183,7 @@ Experiments were conducted on the **TUM Leibniz Supercomputing Centre (LRZ)** us
 
 All experiments use fixed random seeds (seed=42 for Phase 1, seed=0 for Phase 2) for Python's `random` module, NumPy, PyTorch CPU and PyTorch CUDA. `torch.backends.cudnn.deterministic` is set to `True` and `benchmark` to `False` to ensure reproducibility across runs.
 
-Validation splits are deterministic and saved to `validation_split.txt` in each experiment folder.
+Validation splits are deterministic and saved to `validation_split.txt` in each processed dataset folders.
 
 ---
 
