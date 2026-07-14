@@ -76,6 +76,10 @@ All architectures accept:
 
 **Note**: The Point Transformer implementation is a pure-PyTorch rewrite of the Pointcept `PartSeg26` architecture. It does NOT require the CUDA-only `pointops` kernel from the reference implementation.
 
+### Hardware Used
+
+Experiments were conducted on the **TUM Leibniz Supercomputing Centre (LRZ)** using the `lrz-dgx-a100-80x8` partition (NVIDIA A100 80GB GPUs).
+
 ---
 
 ## Datasets
@@ -170,12 +174,6 @@ Model checkpoints are not included in this repository due to file size constrain
 2. **Request archive**: trained checkpoints and full training logs can be requested by contacting the author.
 
 All reported results in the thesis are reproducible from the source code and the SLURM submission scripts (`run_phase2.sh`, `slurm_multitask.sh`) provided in this repository.
-
----
-
-## Hardware Used
-
-Experiments were conducted on the **TUM Leibniz Supercomputing Centre (LRZ)** using the `lrz-dgx-a100-80x8` partition (NVIDIA A100 80GB GPUs).
 
 ---
 
