@@ -8,6 +8,10 @@ This repository contains the source code, training pipelines and experimental sc
 
 ## Overview
 
+<p align="center">
+  <img src="methodology.jpg" alt="Two-phase experimental workflow" width="700"/>
+</p>
+
 The thesis presents a systematic two-phase study:
 
 - **Phase 1**: benchmarks the three architectures under a unified protocol on two large CAD segmentation datasets — MFCAD++ (25 classes, 59,665 samples) and Fusion 360 Gallery (8 classes, 35,680 samples).
