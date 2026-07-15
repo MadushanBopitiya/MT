@@ -2,7 +2,7 @@
 
 Master's thesis code repository — Madushan Bopitiya, Technical University of Munich (TUM)
 
-This repository contains the source code, training pipelines and experimental scripts for a Master's thesis benchmarking three state-of-the-art point cloud segmentation architectures (PointNet++, DGCNN, Point Transformer) on the task of machining feature recognition from CAD-derived point clouds.
+This repository contains the source code for a Master's thesis, benchmarking three state-of-the-art point cloud segmentation architectures (PointNet++, DGCNN, Point Transformer) on the task of machining features and tools recognition from CAD-derived point clouds.
 
 ---
 
