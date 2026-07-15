@@ -9,7 +9,7 @@ This repository contains the source code, training pipelines and experimental sc
 ## Overview
 
 <p align="center">
-  <img src="methodology.jpg" alt="Two-phase experimental workflow" width="700"/>
+  <img src="methodology.jpg" alt="Two-phase experimental workflow" width="1000"/>
 </p>
 
 The thesis presents a systematic two-phase study:
