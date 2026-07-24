@@ -1,8 +1,8 @@
-# Deep Learning-Based Detection of Machining Features and Tools from CAD-Derived Point Cloud Data
+# Deep Learning-Based Detection of Machining Features and Tools in Industrial Datasets from CAD-Derived Point Cloud Data
 
 Master's thesis code repository — Madushan Bopitiya, Technical University of Munich (TUM)
 
-This repository contains the source code for a Master's thesis, benchmarking three state-of-the-art point cloud segmentation architectures (PointNet++, DGCNN, Point Transformer) on the task of machining features and tools recognition from CAD-derived point clouds.
+This repository contains the source code for a Master's thesis on point cloud segmentation of CAD data. Three state-of-the-art architectures — PointNet++, DGCNN and Point Transformer — are benchmarked on machining feature segmentation, then applied via transfer learning to a real industrial dataset for machining tool and process recognition
 
 ---
 
